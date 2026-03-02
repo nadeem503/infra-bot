@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  infra-bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1

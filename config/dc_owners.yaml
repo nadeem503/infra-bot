@@ -1,0 +1,32 @@
+# DC Owner mapping: region slug -> owner details
+# TODO: Replace U_TODO_* with real Slack user IDs for your team
+
+india:
+  name: "India DC Team"
+  slack_id: "U_TODO_INDIA"
+  team: "DC-India"
+  backup_slack_id: "U_TODO_INDIA_BACKUP"
+
+us:
+  name: "US DC Team"
+  slack_id: "U_TODO_US"
+  team: "DC-US"
+  backup_slack_id: "U_TODO_US_BACKUP"
+
+dublin:
+  name: "Dublin DC Team"
+  slack_id: "U_TODO_DUBLIN"
+  team: "DC-Dublin"
+  backup_slack_id: "U_TODO_DUBLIN_BACKUP"
+
+ap:
+  name: "APAC DC Team"
+  slack_id: "U_TODO_AP"
+  team: "DC-APAC"
+  backup_slack_id: "U_TODO_AP_BACKUP"
+
+default:
+  name: "Platform Engineering"
+  slack_id: "U04UTG30V9A"
+  team: "Platform Engineering"
+  backup_slack_id: "U04UTG30V9A"

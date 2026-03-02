@@ -1,0 +1,88 @@
+# Keyword to issue category mapping
+
+reboot:
+  keywords:
+    - "reboot"
+    - "restart"
+    - "hung"
+    - "frozen"
+    - "not responding"
+    - "unresponsive"
+    - "stuck"
+  severity: high
+  auto_action: ssh_reboot
+
+device_down:
+  keywords:
+    - "device down"
+    - "offline"
+    - "disconnected"
+    - "unreachable"
+    - "not available"
+    - "down"
+    - "dead"
+  severity: high
+  auto_action: device_status
+
+db_mismatch:
+  keywords:
+    - "db mismatch"
+    - "database mismatch"
+    - "data inconsistency"
+    - "wrong build"
+    - "build mismatch"
+    - "version mismatch"
+  severity: medium
+  auto_action: db_query
+
+adb_issue:
+  keywords:
+    - "adb"
+    - "no adb"
+    - "adb offline"
+    - "adb unauthorized"
+    - "adb not found"
+  severity: medium
+  auto_action: adb_restart
+
+jenkins_failure:
+  keywords:
+    - "jenkins"
+    - "build failed"
+    - "pipeline failed"
+    - "ci failure"
+    - "build broken"
+  severity: medium
+  auto_action: jenkins_trigger
+
+network_issue:
+  keywords:
+    - "network"
+    - "connectivity"
+    - "ping fail"
+    - "timeout"
+    - "connection refused"
+    - "no internet"
+  severity: high
+  auto_action: device_status
+
+app_crash:
+  keywords:
+    - "crash"
+    - "crashed"
+    - "oom"
+    - "out of memory"
+    - "anr"
+    - "application not responding"
+  severity: medium
+  auto_action: adb_logcat
+
+storage_issue:
+  keywords:
+    - "storage full"
+    - "disk full"
+    - "no space"
+    - "storage issue"
+    - "low storage"
+  severity: medium
+  auto_action: adb_clear_storage

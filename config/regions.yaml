@@ -1,0 +1,33 @@
+# Region detection patterns (Python regex, case-insensitive)
+
+india:
+  patterns:
+    - "\\b(india|ind|blr|bangalore|bengaluru|hyderabad|hyd|mumbai|mum)\\b"
+    - "\\b(india[-_]?(dc|datacenter|region))\\b"
+    - "\\b(in[-_]?(dc|region|cluster))\\b"
+  display_name: "India"
+  timezone: "Asia/Kolkata"
+
+us:
+  patterns:
+    - "\\b(us|usa|united.states|america|american)\\b"
+    - "\\b(us[-_]?(east|west|central|dc|datacenter|region))\\b"
+    - "\\b(virginia|california|ohio|oregon|seattle|san.francisco|new.york)\\b"
+  display_name: "US"
+  timezone: "America/New_York"
+
+dublin:
+  patterns:
+    - "\\b(dublin|ireland|eu|europe|european)\\b"
+    - "\\b(eu[-_]?(west|dc|datacenter|region))\\b"
+    - "\\b(ire|euw)\\b"
+  display_name: "Dublin/EU"
+  timezone: "Europe/Dublin"
+
+ap:
+  patterns:
+    - "\\b(ap|apac|asia.pacific|singapore|sg|sydney|australia|tokyo|japan)\\b"
+    - "\\b(ap[-_]?(south|southeast|east|dc|datacenter|region))\\b"
+    - "\\b(apse|ape|aps)\\b"
+  display_name: "APAC"
+  timezone: "Asia/Singapore"
