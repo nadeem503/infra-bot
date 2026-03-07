@@ -1,32 +1,50 @@
 # DC Owner mapping: region slug -> owner details
-# TODO: Replace U_TODO_* with real Slack user IDs for your team
+# Owners are notified when an issue is detected in their region.
+# ip_prefix matches device IPs for automatic region resolution.
+
+ap:
+  name: "AP-South-1 DC (mum-dc)"
+  # 10.151.x.x
+  ip_prefix: "10.151"
+  region_code: "ap-south-1"
+  team: "DC-APAC"
+  slack_ids:
+    - "U07AZ06PVQW"
+    - "U04UTG30V9A"
+
+dublin:
+  name: "EU-West-1 DC (eu-dc)"
+  # 10.100.x.x
+  ip_prefix: "10.100"
+  region_code: "eu-west-1"
+  team: "DC-EU"
+  slack_ids:
+    - "U08QCD0TG1F"
+    - "U08QCCZADR7"
+
+us:
+  name: "US-West-1 DC (#lw-expansion)"
+  # 10.146.x.x
+  ip_prefix: "10.146"
+  region_code: "us-west-1"
+  team: "DC-US"
+  slack_ids:
+    - "D0AHCBWB0BC"  # WARNING: ID starts with 'D' (DM/channel?). Slack user IDs start with 'U'.
+                     # Verify this — it may need to be a real user ID or <!subteam^S...> usergroup.
+    - "U093GFRUUUT"
+    - "U071R20NEGY"
+    - "U092U6D4EH1"
 
 india:
   name: "India DC Team"
-  slack_id: "U_TODO_INDIA"
+  ip_prefix: ""
+  region_code: "in-south"
   team: "DC-India"
-  backup_slack_id: "U_TODO_INDIA_BACKUP"
-
-us:
-  name: "US DC Team"
-  slack_id: "U_TODO_US"
-  team: "DC-US"
-  backup_slack_id: "U_TODO_US_BACKUP"
-
-dublin:
-  name: "Dublin DC Team"
-  slack_id: "U_TODO_DUBLIN"
-  team: "DC-Dublin"
-  backup_slack_id: "U_TODO_DUBLIN_BACKUP"
-
-ap:
-  name: "APAC DC Team"
-  slack_id: "U_TODO_AP"
-  team: "DC-APAC"
-  backup_slack_id: "U_TODO_AP_BACKUP"
+  slack_ids: []  # TODO: add real Slack IDs
 
 default:
   name: "Platform Engineering"
-  slack_id: "U04UTG30V9A"
+  ip_prefix: ""
   team: "Platform Engineering"
-  backup_slack_id: "U04UTG30V9A"
+  slack_ids:
+    - "U04UTG30V9A"

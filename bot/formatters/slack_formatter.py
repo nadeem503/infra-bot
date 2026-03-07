@@ -1,4 +1,7 @@
-"""Slack Block Kit message formatter for infra-bot responses."""
+"""Slack Block Kit message formatter for infra-bot responses.
+
+Supports multiple DC owners per region via slack_ids list.
+"""
 from typing import Optional
 
 from utils.config_loader import get_dc_owners
@@ -20,6 +23,23 @@ class SlackFormatter:
     def get_owner(self, region: Optional[str]) -> dict:
         return self.owners.get(region or "") or self.owners.get("default", {})
 
+    def get_owner_mentions(self, region: Optional[str]) -> tuple[str, str]:
+        """Return (mention_string, team_name) for a region.
+
+        mention_string is space-joined <@UID> for every owner,
+        e.g. "<@U07AZ06PVQW> <@U04UTG30V9A>"
+        """
+        owner = self.get_owner(region)
+        name = owner.get("name", "Unknown")
+
+        # Support slack_ids list (preferred) or legacy single slack_id
+        ids: list[str] = owner.get("slack_ids") or []
+        if not ids and owner.get("slack_id"):
+            ids = [owner["slack_id"]]
+
+        mention = " ".join(f"<@{uid}>" for uid in ids) if ids else name
+        return mention, name
+
     def format_analysis(
         self,
         issue_type: Optional[str],
@@ -30,10 +50,7 @@ class SlackFormatter:
         action_records: list[dict],
     ) -> list[dict]:
         """Build Block Kit blocks for the main analysis response."""
-        owner = self.get_owner(region)
-        owner_slack_id = owner.get("slack_id", "")
-        owner_name = owner.get("name", "Unknown")
-        owner_mention = f"<@{owner_slack_id}>" if owner_slack_id else owner_name
+        owner_mention, owner_name = self.get_owner_mentions(region)
 
         device_list = ", ".join(f"`{d}`" for d in devices) if devices else "_None identified_"
         actions_text = (
@@ -52,7 +69,7 @@ class SlackFormatter:
                         f"\u2022 *Issue Detected:* `{issue_type or 'general'}`\n"
                         f"\u2022 *Region:* {region_display}\n"
                         f"\u2022 *Devices:* {device_list}\n"
-                        f"\u2022 *DC Owner:* {owner_mention} ({owner_name})\n"
+                        f"\u2022 *DC Owners:* {owner_mention} ({owner_name})\n"
                         f"\u2022 *Action Plan:*\n{actions_text}\n"
                         "\u2022 *Executing:* Awaiting approval :hourglass_flowing_sand:"
                     ),
