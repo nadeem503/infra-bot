@@ -25,9 +25,10 @@ us:
   region_code: "us-west-1"
   team: "DC-US"
   slack_ids:
+    - "U0AFNHU0PJ5"  # Jesse Hernandez
     - "C06TFLLMR5G"  # #lw-expansion channel
     - "U093GFRUUUT"
-    - "U071R20NEGY"
+    - "U071R20NEGY"  # Keiwai Poon
     - "U092U6D4EH1"
 
 india:
