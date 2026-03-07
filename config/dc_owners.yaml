@@ -1,10 +1,8 @@
 # DC Owner mapping: region slug -> owner details
-# Owners are notified when an issue is detected in their region.
-# ip_prefix matches device IPs for automatic region resolution.
+# slack_ids: use U... for users, C... for channels — formatter handles both.
 
 ap:
   name: "AP-South-1 DC (mum-dc)"
-  # 10.151.x.x
   ip_prefix: "10.151"
   region_code: "ap-south-1"
   team: "DC-APAC"
@@ -14,7 +12,6 @@ ap:
 
 dublin:
   name: "EU-West-1 DC (eu-dc)"
-  # 10.100.x.x
   ip_prefix: "10.100"
   region_code: "eu-west-1"
   team: "DC-EU"
@@ -23,14 +20,12 @@ dublin:
     - "U08QCCZADR7"
 
 us:
-  name: "US-West-1 DC (#lw-expansion)"
-  # 10.146.x.x
+  name: "US-West-1 DC"
   ip_prefix: "10.146"
   region_code: "us-west-1"
   team: "DC-US"
   slack_ids:
-    - "D0AHCBWB0BC"  # WARNING: ID starts with 'D' (DM/channel?). Slack user IDs start with 'U'.
-                     # Verify this — it may need to be a real user ID or <!subteam^S...> usergroup.
+    - "C06TFLLMR5G"  # #lw-expansion channel
     - "U093GFRUUUT"
     - "U071R20NEGY"
     - "U092U6D4EH1"
@@ -40,7 +35,7 @@ india:
   ip_prefix: ""
   region_code: "in-south"
   team: "DC-India"
-  slack_ids: []  # TODO: add real Slack IDs
+  slack_ids: []  # TODO: add real Slack user IDs
 
 default:
   name: "Platform Engineering"

@@ -1,6 +1,9 @@
 """Slack Block Kit message formatter for infra-bot responses.
 
-Supports multiple DC owners per region via slack_ids list.
+Supports multiple DC owners per region.
+Auto-detects mention format:
+  U... -> <@USERID>   (user mention)
+  C... -> <#CHANNELID> (channel mention)
 """
 from typing import Optional
 
@@ -8,6 +11,13 @@ from utils.config_loader import get_dc_owners
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _make_mention(slack_id: str) -> str:
+    """Return the correct Slack mention syntax for a given ID."""
+    if slack_id.startswith("C"):
+        return f"<#{slack_id}>"   # channel mention
+    return f"<@{slack_id}>"       # user mention
 
 
 class SlackFormatter:
@@ -26,18 +36,16 @@ class SlackFormatter:
     def get_owner_mentions(self, region: Optional[str]) -> tuple[str, str]:
         """Return (mention_string, team_name) for a region.
 
-        mention_string is space-joined <@UID> for every owner,
-        e.g. "<@U07AZ06PVQW> <@U04UTG30V9A>"
+        e.g. "<#C06TFLLMR5G> <@U093GFRUUUT> <@U071R20NEGY>"
         """
         owner = self.get_owner(region)
         name = owner.get("name", "Unknown")
 
-        # Support slack_ids list (preferred) or legacy single slack_id
         ids: list[str] = owner.get("slack_ids") or []
         if not ids and owner.get("slack_id"):
             ids = [owner["slack_id"]]
 
-        mention = " ".join(f"<@{uid}>" for uid in ids) if ids else name
+        mention = " ".join(_make_mention(sid) for sid in ids) if ids else name
         return mention, name
 
     def format_analysis(
