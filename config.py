@@ -14,6 +14,9 @@ class Settings:
     SLACK_APP_TOKEN: str = os.getenv("SLACK_APP_TOKEN", "")
     APPROVER_SLACK_ID: str = os.getenv("APPROVER_SLACK_ID", "U04UTG30V9A")
 
+    # Claude AI
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
     # SSH / Bastion
     BASTION_HOST: str = os.getenv("BASTION_HOST", "")
     BASTION_USER: str = os.getenv("BASTION_USER", "")
