@@ -1,6 +1,13 @@
 version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
   infra-bot:
     build: .
     restart: unless-stopped
@@ -11,3 +18,9 @@ services:
       - ./logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:

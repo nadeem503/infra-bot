@@ -33,6 +33,15 @@ class BaseAction(abc.ABC):
           - details (dict)
         """
 
+    def dry_run(self) -> str:
+        """Return a human-readable preview of what this action would do.
+
+        No network or SSH calls are made here.
+        Override in subclasses for action-specific previews.
+        """
+        device_str = ", ".join(f"`{d}`" for d in self.devices) if self.devices else "no device"
+        return f"`{self.action_type}` on {device_str} (region: {self.region})"
+
     def run(self) -> dict:
         """Public entry point: audit-logs before/after and wraps exceptions."""
         audit_log(

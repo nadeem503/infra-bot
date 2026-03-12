@@ -5,6 +5,7 @@ Auto-detects mention format:
   U... -> <@USERID>   (user mention)
   C... -> <#CHANNELID> (channel mention)
 """
+import time
 from typing import Optional
 
 from utils.config_loader import get_dc_owners
@@ -34,17 +35,12 @@ class SlackFormatter:
         return self.owners.get(region or "") or self.owners.get("default", {})
 
     def get_owner_mentions(self, region: Optional[str]) -> tuple[str, str]:
-        """Return (mention_string, team_name) for a region.
-
-        e.g. "<#C06TFLLMR5G> <@U093GFRUUUT> <@U071R20NEGY>"
-        """
+        """Return (mention_string, team_name) for a region."""
         owner = self.get_owner(region)
         name = owner.get("name", "Unknown")
-
         ids: list[str] = owner.get("slack_ids") or []
         if not ids and owner.get("slack_id"):
             ids = [owner["slack_id"]]
-
         mention = " ".join(_make_mention(sid) for sid in ids) if ids else name
         return mention, name
 
@@ -59,7 +55,6 @@ class SlackFormatter:
     ) -> list[dict]:
         """Build Block Kit blocks for the main analysis response."""
         owner_mention, owner_name = self.get_owner_mentions(region)
-
         device_list = ", ".join(f"`{d}`" for d in devices) if devices else "_None identified_"
         actions_text = (
             "\n".join(f"\u2022 {a}" for a in proposed_actions)
@@ -93,31 +88,70 @@ class SlackFormatter:
     def _approval_buttons(self, record: dict) -> list[dict]:
         action_id = record["action_id"]
         action_type = record["action_type"]
-        return [
+        dry_run_preview = record.get("dry_run_preview")
+
+        blocks: list[dict] = [
             {
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": f":wrench: *Proposed Action:* `{action_type}`"},
             },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "\u2705 Approve"},
-                        "style": "primary",
-                        "action_id": "approve_action",
-                        "value": action_id,
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "\u274c Deny"},
-                        "style": "danger",
-                        "action_id": "deny_action",
-                        "value": action_id,
-                    },
-                ],
-            },
         ]
+
+        if dry_run_preview:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":mag: *Dry Run Preview:*\n```{dry_run_preview}```",
+                },
+            })
+
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "\u2705 Approve"},
+                    "style": "primary",
+                    "action_id": "approve_action",
+                    "value": action_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "\U0001f680 Execute Now"},
+                    "style": "primary",
+                    "action_id": "execute_now_action",
+                    "value": action_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "\u274c Deny"},
+                    "style": "danger",
+                    "action_id": "deny_action",
+                    "value": action_id,
+                },
+            ],
+        })
+        return blocks
+
+    def format_pending_list(self, records: list) -> str:
+        """Format list of pending actions for /infra pending."""
+        if not records:
+            return ":white_check_mark: No pending actions right now."
+
+        lines = [f":hourglass: *{len(records)} pending action(s):*\n"]
+        for rec in records:
+            age_min = max(0, int((time.time() - rec.requested_at) / 60))
+            devices_str = ", ".join(f"`{d}`" for d in rec.devices[:3])
+            if len(rec.devices) > 3:
+                devices_str += f" +{len(rec.devices) - 3} more"
+            if not devices_str:
+                devices_str = "_no device_"
+            lines.append(
+                f"\u2022 `{rec.action_id}` \u2014 `{rec.action_type}` | "
+                f"{rec.region} | {devices_str} | {age_min}m ago | <@{rec.requested_by}>"
+            )
+        return "\n".join(lines)
 
     def format_result(self, action_type: str, result: dict) -> str:
         icon = ":white_check_mark:" if result.get("success") else ":x:"

@@ -1,7 +1,7 @@
 """Claude AI brain for infra-bot.
 
 Uses Claude to:
-  1. Classify intent from any natural language Slack message
+  1. Classify intent from any natural language Slack message (with thread context)
   2. Extract structured parameters (ticket title, assignee, devices, region, etc.)
   3. Generate casual, human-sounding responses
 
@@ -24,7 +24,8 @@ logger = get_logger(__name__)
 CLASSIFY_SYSTEM = """
 You are the brain of Infra-Bot, an infrastructure assistant for LambdaTest's Device Cloud team.
 
-Your job: read a Slack message and return a JSON object classifying the intent and extracting parameters.
+Your job: read a Slack message (and optional prior thread context) and return a JSON object
+classifying the intent and extracting parameters.
 
 Supported intents:
 - create_jira     — create a new Jira ticket in project TE
@@ -56,7 +57,6 @@ Always respond with ONLY valid JSON, no explanation, no markdown fences:
     "time_range": "1 PM-1:30 PM",
     "timezone": "IST",
     "agenda": "...",
-    "ensure": "...",
 
     // infra_issue
     "issue_category": "device_down" | "reboot" | "adb_issue" | "network_issue" | "db_mismatch" | "jenkins_failure" | "app_crash" | "storage_issue",
@@ -66,9 +66,10 @@ Always respond with ONLY valid JSON, no explanation, no markdown fences:
 }
 
 Rules:
-- Slack user IDs: 11-char strings starting with U (e.g. U06D6DENXQR) or wrapped as <@U06D6DENXQR> — extract the ID either way
+- Slack user IDs: 11-char strings starting with U (e.g. U06D6DENXQR) or wrapped as <@U06D6DENXQR> — extract the ID
 - UDIDs: 40-char hex strings
-- Device IPs: 10.151.x.x → region ap, 10.100.x.x → dublin, 10.146.x.x → us
+- Device IPs: 10.151.x.x -> region ap, 10.100.x.x -> dublin, 10.146.x.x -> us
+- If follow-up context is present (prior thread messages), use it to fill in missing params
 - If no assignee is mentioned, use empty string
 - If no cc is mentioned, use empty array
 """
@@ -106,18 +107,26 @@ class ClaudeBrain:
             self._client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         return self._client
 
-    def classify(self, text: str) -> dict:
+    def classify(self, text: str, thread_history: list[dict] | None = None) -> dict:
         """Classify intent and extract params from a Slack message.
 
+        thread_history: prior messages as [{role, content}] for follow-up context.
+        Allows Claude to understand "also reboot it" by referencing earlier mentions.
         Returns dict with keys: intent, confidence, params.
         Falls back to {intent: unknown} on any error.
         """
         try:
+            messages: list[dict] = []
+            if thread_history:
+                # Inject prior thread turns so Claude understands follow-ups
+                messages.extend(thread_history)
+            messages.append({"role": "user", "content": text})
+
             resp = self.client.messages.create(
-                model="claude-haiku-4-5-20251001",   # fast + cheap for classification
+                model="claude-haiku-4-5-20251001",
                 max_tokens=512,
                 system=CLASSIFY_SYSTEM,
-                messages=[{"role": "user", "content": text}],
+                messages=messages,
             )
             raw = resp.content[0].text.strip()
 
@@ -158,7 +167,6 @@ class ClaudeBrain:
 
         except Exception as exc:  # noqa: BLE001
             logger.error("Claude generate_response error: %s", exc)
-            # Safe fallback
             return "Done :white_check_mark:" if context.get("success") else ":x: Something went wrong."
 
 

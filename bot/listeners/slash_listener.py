@@ -1,0 +1,167 @@
+"""Slash command handler for /infra.
+
+Supported subcommands:
+  /infra status <ip_or_udid>          -- fetch live device health
+  /infra pending                       -- list all pending approval actions
+  /infra history device=<id> last=24h -- recent audit log entries for a device
+  /infra faulty count                  -- count offline/faulty devices from DB (read-only)
+
+Note: Register the /infra slash command in your Slack App settings
+(Features > Slash Commands) pointing to your Socket Mode app.
+"""
+import json
+import re
+import time
+from pathlib import Path
+
+from slack_bolt import App
+
+from bot.approval.approval_manager import approval_manager
+from bot.formatters.slack_formatter import SlackFormatter
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+_formatter = SlackFormatter()
+
+LOGS_PATH = Path("logs/actions.jsonl")
+
+# Customize this query for your actual devices table schema
+FAULTY_QUERY = (
+    "SELECT COUNT(*) AS faulty_count FROM devices "
+    "WHERE status IN ('offline', 'faulty', 'error', 'down')"
+)
+
+
+def _parse(text: str) -> tuple[str, list[str]]:
+    parts = text.strip().split()
+    return (parts[0].lower() if parts else "help"), parts[1:]
+
+
+def _handle_status(target: str, respond) -> None:  # noqa: ANN001
+    if not target:
+        respond(":warning: Usage: `/infra status <ip_or_udid>`")
+        return
+    respond(f":hourglass: Fetching status for `{target}`...")
+    try:
+        from bot.actions.device_status import DeviceStatusAction  # noqa: PLC0415
+        action = DeviceStatusAction(
+            params={"host": target, "udid": target, "devices": [target]},
+            triggered_by="slash_cmd",
+            channel="slash",
+            region="unknown",
+        )
+        result = action.run()
+        icon = ":white_check_mark:" if result.get("success") else ":x:"
+        msg = result.get("message", "No response")
+        output = result.get("details", {}).get("output", "")
+        output_str = f"\n```{output[:600]}```" if output else ""
+        respond(f"{icon} *Device:* `{target}`\n{msg}{output_str}")
+    except Exception as exc:  # noqa: BLE001
+        respond(f":warning: Failed to fetch status: `{type(exc).__name__}: {exc}`")
+
+
+def _handle_pending(respond) -> None:  # noqa: ANN001
+    approval_manager.cleanup_expired()
+    records = approval_manager.list_pending()
+    respond(_formatter.format_pending_list(records))
+
+
+def _handle_history(args: list[str], respond) -> None:  # noqa: ANN001
+    device_id = ""
+    hours = 24
+    for arg in args:
+        if arg.startswith("device="):
+            device_id = arg.split("=", 1)[1]
+        elif arg.startswith("last="):
+            m = re.match(r"(\d+)([hd]?)", arg.split("=", 1)[1])
+            if m:
+                n, unit = int(m.group(1)), m.group(2)
+                hours = n * 24 if unit == "d" else n
+
+    if not device_id:
+        respond(":warning: Usage: `/infra history device=<udid_or_ip> last=24h`")
+        return
+
+    cutoff = time.time() - hours * 3600
+    entries = []
+    if LOGS_PATH.exists():
+        with LOGS_PATH.open() as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if device_id in (entry.get("devices") or []) and entry.get("timestamp", 0) >= cutoff:
+                        entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+
+    if not entries:
+        respond(f":mag: No history found for `{device_id}` in the last {hours}h")
+        return
+
+    lines = [f":scroll: *History for `{device_id}` (last {hours}h) \u2014 {len(entries)} entries:*\n"]
+    for e in entries[-20:]:   # cap at 20 to avoid Slack message size limit
+        ts_str = time.strftime("%m/%d %H:%M", time.localtime(e.get("timestamp", 0)))
+        ok = ":white_check_mark:" if e.get("status") == "completed" else ":x:"
+        lines.append(
+            f"{ok} `{ts_str}` \u2014 `{e.get('action_type')}` | "
+            f"{e.get('region', '?')} | {e.get('status')} | by <@{e.get('triggered_by', '?')}>"
+        )
+    respond("\n".join(lines))
+
+
+def _handle_faulty_count(respond) -> None:  # noqa: ANN001
+    if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD, settings.DB_NAME]):
+        respond(":warning: Database not configured — set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env")
+        return
+
+    respond(":hourglass: Querying DB for faulty device count...")
+    try:
+        import pymysql  # noqa: PLC0415
+        conn = pymysql.connect(
+            host=settings.DB_HOST,
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD,
+            database=settings.DB_NAME,
+            port=settings.DB_PORT,
+            connect_timeout=10,
+        )
+        with conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute(FAULTY_QUERY)
+                row = cur.fetchone()
+        count = row.get("faulty_count", 0) if row else 0
+        respond(
+            f":warning: *Faulty device count:* `{count}` device(s) currently offline / faulty / down\n"
+            f"_Query: `{FAULTY_QUERY}`_"
+        )
+    except Exception as exc:  # noqa: BLE001
+        respond(f":x: DB query failed: `{type(exc).__name__}: {exc}`")
+
+
+def register_slash_listeners(app: App) -> None:
+    @app.command("/infra")
+    def handle_infra(ack, body, respond) -> None:  # noqa: ANN001
+        ack()
+        text = body.get("text", "").strip()
+        user_id = body.get("user_id", "")
+        logger.info("/infra command from %s: %s", user_id, text)
+
+        subcommand, args = _parse(text)
+
+        if subcommand == "status" and args:
+            _handle_status(args[0], respond)
+        elif subcommand == "pending":
+            _handle_pending(respond)
+        elif subcommand == "history":
+            _handle_history(args, respond)
+        elif subcommand == "faulty" and args and args[0] == "count":
+            _handle_faulty_count(respond)
+        else:
+            respond(
+                ":robot_face: *Infra-Bot slash commands:*\n"
+                "\u2022 `/infra status <ip_or_udid>` \u2014 live device health\n"
+                "\u2022 `/infra pending` \u2014 list pending approvals\n"
+                "\u2022 `/infra history device=<id> last=24h` \u2014 action history\n"
+                "\u2022 `/infra faulty count` \u2014 count offline/faulty devices from DB"
+            )

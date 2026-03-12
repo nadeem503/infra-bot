@@ -17,6 +17,9 @@ class Settings:
     # Claude AI
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
+    # Redis
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
     # SSH / Bastion
     BASTION_HOST: str = os.getenv("BASTION_HOST", "")
     BASTION_USER: str = os.getenv("BASTION_USER", "")
