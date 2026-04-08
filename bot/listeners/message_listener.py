@@ -52,8 +52,7 @@ _CAPABILITY_TRIGGERS = {"what can you do", "help", "commands", "capabilities", "
 
 _GREETING_REPLY = (
     "Hey! :wave: I'm Infra-Bot — your DC infrastructure assistant.\n"
-    "I can help with device issues, ADB restarts, reboots, Jira tickets, and more.\n"
-    "Try: `@infra-bot device 10.151.x.x is down` or `@infra-bot create a jira task: ...`"
+    "I can help with device issues, ADB restarts, reboots, Jira tickets, and more."
 )
 _CAPABILITIES_REPLY = (
     "*Here's what I can do:*\n\n"
