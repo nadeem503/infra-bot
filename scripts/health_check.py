@@ -114,6 +114,18 @@ def check_redis(verbose: bool) -> None:
 
 
 def check_gemini(verbose: bool) -> None:
+    @check("google-genai package installed", verbose)
+    def _():
+        try:
+            from google import genai  # noqa: F401
+            from google.genai import types  # noqa: F401
+        except ImportError:
+            raise AssertionError(
+                "Package not found — run: pip3 install google-genai\n"
+                "        Also run: pip3 uninstall google-generativeai -y"
+            )
+        return f"google-genai importable"
+
     @check("Gemini API key valid", verbose)
     def _():
         from google import genai
