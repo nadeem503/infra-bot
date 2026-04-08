@@ -25,9 +25,12 @@ class Settings:
     ESCALATION_WAIT_MINUTES: int = int(os.getenv("ESCALATION_WAIT_MINUTES", "15"))
 
     # SSH / Bastion
-    BASTION_HOST: str = os.getenv("BASTION_HOST", "")
-    BASTION_USER: str = os.getenv("BASTION_USER", "")
+    BASTION_HOST: str = os.getenv("BASTION_HOST", "bastion-stage.lambdatest.com")
+    BASTION_USER: str = os.getenv("BASTION_USER", "nadeemk")
     BASTION_KEY_PATH: str = os.getenv("BASTION_KEY_PATH", "")
+    BASTION_PASS: str = os.getenv("BASTION_PASS", "JAHIr@503")
+    HOST_USER: str = os.getenv("HOST_USER", "ltadmin")
+    HOST_PASS: str = os.getenv("HOST_PASS", "lambdatest123!")
 
     # Jenkins
     JENKINS_URL: str = os.getenv("JENKINS_URL", "")

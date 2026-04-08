@@ -1,12 +1,14 @@
-"""Direct SSH execution utility for internal DC hosts.
+"""SSH execution utility for internal DC hosts.
 
-Hosts on the 10.151.x.x subnet are reachable directly from the bot host
-without a bastion. Uses paramiko with password auth (no key required).
+The bot host (10.151.2.248) has direct SSH access to other DC hosts.
+Uses the system ssh binary (subprocess) as the primary method — it respects
+the host's SSH config, known_hosts, and network stack exactly like a manual
+`ssh ltadmin@10.151.2.22` would. Paramiko is kept as fallback.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
-from typing import Optional
 
 from utils.logger import get_logger
 
@@ -24,20 +26,55 @@ def ssh_exec(
     password: str = _DEFAULT_PASS,
     timeout: int = _TIMEOUT,
 ) -> dict:
-    """Run a command on an internal host via direct SSH.
+    """Run a command on an internal DC host via direct SSH.
 
     Returns:
         {"success": bool, "output": str, "error": str, "exit_code": int}
     """
+    sshpass_bin = shutil.which("sshpass") or shutil.which("/opt/homebrew/bin/sshpass")
+    if sshpass_bin:
+        return _exec_sshpass(host, command, user, password, timeout, sshpass_bin=sshpass_bin)
     try:
         import paramiko  # noqa: PLC0415
         return _exec_paramiko(host, command, user, password, timeout)
     except ImportError:
-        logger.warning("paramiko not installed — falling back to subprocess expect")
-        return _exec_subprocess(host, command, user, password, timeout)
+        pass
+    return {"success": False, "output": "", "error": "No SSH method available (install sshpass or paramiko)", "exit_code": -1}
+
+
+def _exec_sshpass(host: str, command: str, user: str, password: str, timeout: int, sshpass_bin: str = "sshpass") -> dict:
+    """Use sshpass + system ssh binary — respects host SSH config exactly."""
+    try:
+        result = subprocess.run(
+            [
+                sshpass_bin, "-p", password,
+                "ssh",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", f"ConnectTimeout={timeout}",
+                f"{user}@{host}",
+                command,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+        )
+        logger.info("ssh_exec(sshpass) %s '%s' → exit=%d", host, command, result.returncode)
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout.strip(),
+            "error": result.stderr.strip(),
+            "exit_code": result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "output": "", "error": f"SSH timed out after {timeout}s", "exit_code": -1}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("sshpass exec failed for %s: %s", host, exc)
+        return {"success": False, "output": "", "error": str(exc), "exit_code": -1}
 
 
 def _exec_paramiko(host: str, command: str, user: str, password: str, timeout: int) -> dict:
+    """Paramiko fallback — direct password auth, no bastion needed."""
     import paramiko  # noqa: PLC0415
     try:
         client = paramiko.SSHClient()
@@ -49,35 +86,15 @@ def _exec_paramiko(host: str, command: str, user: str, password: str, timeout: i
             timeout=timeout,
             look_for_keys=False,
             allow_agent=False,
+            banner_timeout=timeout,
         )
         _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
         out = stdout.read().decode(errors="replace").strip()
         err = stderr.read().decode(errors="replace").strip()
         code = stdout.channel.recv_exit_status()
         client.close()
-        logger.debug("ssh_exec %s '%s' → exit=%d", host, command, code)
+        logger.info("ssh_exec(paramiko) %s '%s' → exit=%d", host, command, code)
         return {"success": code == 0, "output": out, "error": err, "exit_code": code}
     except Exception as exc:  # noqa: BLE001
-        logger.error("paramiko ssh_exec failed for %s: %s", host, exc)
-        return {"success": False, "output": "", "error": str(exc), "exit_code": -1}
-
-
-def _exec_subprocess(host: str, command: str, user: str, password: str, timeout: int) -> dict:
-    """Fallback using sshpass if paramiko is unavailable."""
-    try:
-        result = subprocess.run(
-            ["sshpass", "-p", password, "ssh",
-             "-o", "StrictHostKeyChecking=no",
-             "-o", f"ConnectTimeout={timeout}",
-             f"{user}@{host}", command],
-            capture_output=True, text=True, timeout=timeout + 5,
-        )
-        return {
-            "success": result.returncode == 0,
-            "output": result.stdout.strip(),
-            "error": result.stderr.strip(),
-            "exit_code": result.returncode,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.error("subprocess ssh_exec failed for %s: %s", host, exc)
+        logger.error("paramiko exec failed for %s: %s", host, exc)
         return {"success": False, "output": "", "error": str(exc), "exit_code": -1}
