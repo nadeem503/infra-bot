@@ -17,7 +17,7 @@ import re
 from functools import lru_cache
 from typing import Optional
 
-from utils.config_loader import load_yaml
+from utils.config_loader import get_keywords
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +54,7 @@ _AMBIGUOUS_CATEGORIES = {"db_mismatch"}
 
 @lru_cache(maxsize=1)
 def _load_keywords() -> dict:
-    return load_yaml("config/keywords.yaml")
+    return get_keywords()
 
 
 def _extract_devices(text: str) -> list[str]:
