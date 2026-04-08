@@ -113,7 +113,10 @@ def check_redis(verbose: bool) -> None:
         return "Write → Read → Delete cycle OK"
 
 
-def check_gemini(verbose: bool) -> None:
+def check_gemini(verbose: bool, live: bool = False) -> None:
+    """Check Gemini setup. Live API calls skipped by default to preserve quota.
+    Use --gemini-live flag to run actual API calls."""
+
     @check("google-genai package installed", verbose)
     def _():
         try:
@@ -124,14 +127,25 @@ def check_gemini(verbose: bool) -> None:
                 "Package not found — run: pip3 install google-genai\n"
                 "        Also run: pip3 uninstall google-generativeai -y"
             )
-        return f"google-genai importable"
+        return "google-genai importable"
 
-    @check("Gemini API key valid", verbose)
+    @check("GEMINI_API_KEY format", verbose)
+    def _():
+        key = os.getenv("GEMINI_API_KEY", "")
+        assert key, "GEMINI_API_KEY not set"
+        assert key.startswith("AIza"), "Expected key starting with AIza"
+        return f"AIza...{key[-4:]}"
+
+    if not live:
+        results.append(("Gemini live API call", SKIP, "use --gemini-live to test (costs quota)"))
+        print(f"{SKIP}  Gemini live API call (use --gemini-live to test — costs quota)")
+        return
+
+    @check("Gemini API key valid (live)", verbose)
     def _():
         from google import genai
         from google.genai import types
         api_key = os.getenv("GEMINI_API_KEY", "")
-        assert api_key, "GEMINI_API_KEY not set"
         client = genai.Client(api_key=api_key)
         resp = client.models.generate_content(
             model="gemini-2.0-flash",
@@ -141,7 +155,7 @@ def check_gemini(verbose: bool) -> None:
         assert resp.text, "Empty response from Gemini"
         return f"Gemini responded: {resp.text.strip()[:40]}"
 
-    @check("Gemini intent classification (JSON mode)", verbose)
+    @check("Gemini JSON mode (live)", verbose)
     def _():
         from google import genai
         from google.genai import types
@@ -246,6 +260,8 @@ def check_config_files(verbose: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Infra-Bot Health Check")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show detail for each check")
+    parser.add_argument("--gemini-live", action="store_true",
+                        help="Run live Gemini API calls (costs 2 quota tokens — skip during routine checks)")
     args = parser.parse_args()
 
     v = args.verbose
@@ -264,7 +280,7 @@ def main() -> None:
     check_redis(v)
 
     print("\n── Google Gemini ───────────────────────────────────")
-    check_gemini(v)
+    check_gemini(v, live=args.gemini_live)
 
     print("\n── Slack ───────────────────────────────────────────")
     check_slack(v)

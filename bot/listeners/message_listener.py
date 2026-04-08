@@ -29,7 +29,8 @@ from bot.memory.redis_client import get_redis
 from bot.analyzers.root_cause_analyzer import (
     add_signal, already_analyzed, mark_analyzed, should_correlate, format_signals_for_claude,
 )
-from bot.nlp.claude_brain import brain
+from bot.nlp.claude_brain import brain, _jira_created_reply, _jira_assigned_reply, _unclear_reply, _invite_reply
+from bot.nlp.local_classifier import classify_local
 from config import settings
 from utils.device_name import get_device_name
 from utils.logger import get_logger
@@ -365,12 +366,20 @@ def register_message_listeners(app: App) -> None:
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
         thread_memory.add_message(channel, thread_ts, "user", text)
 
-        classification = brain.classify(text, thread_history=thread_history or None)
+        # --- Try local classifier first (no Gemini call) ---
+        classification = classify_local(text, thread_history or None)
+        if classification:
+            source = "local"
+        else:
+            # Local classifier couldn't handle it — fall back to Gemini
+            classification = brain.classify(text, thread_history=thread_history or None)
+            source = "gemini"
+
         intent = classification.get("intent", "unknown")
         params = classification.get("params", {})
         confidence = classification.get("confidence", 0.0)
 
-        logger.info("Classified: intent=%s confidence=%.2f", intent, confidence)
+        logger.info("Classified [%s]: intent=%s confidence=%.2f", source, intent, confidence)
 
         # --- Quota exceeded — surface friendly message instead of crashing ---
         if intent == "_quota_exceeded":
@@ -400,26 +409,23 @@ def register_message_listeners(app: App) -> None:
 
         if intent == "create_jira":
             result = _exec_create_jira(params)
-            bot_reply = brain.generate_response("created a Jira ticket", result)
+            bot_reply = _jira_created_reply(result)
             say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "assign_ticket":
             result = _exec_assign_ticket(params)
-            bot_reply = brain.generate_response("assigned a Jira ticket", result)
+            bot_reply = _jira_assigned_reply(result)
             say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "send_invite":
-            bot_reply = brain.generate_response("acknowledged a meeting invite request", params)
+            bot_reply = _invite_reply(params)
             say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "infra_issue":
             bot_reply = _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client)
 
         else:
-            bot_reply = brain.generate_response(
-                "received an unclear message",
-                {"original_text": text, "success": False},
-            )
+            bot_reply = _unclear_reply(text)
             say(text=bot_reply, thread_ts=thread_ts)
 
         if bot_reply:
@@ -464,11 +470,11 @@ def register_message_listeners(app: App) -> None:
         if intent == "create_jira":
             result = _exec_create_jira(params)
             client.chat_postMessage(channel=channel, thread_ts=thread_ts,
-                                    text=brain.generate_response("created a Jira ticket", result))
+                                    text=_jira_created_reply(result))
         elif intent == "assign_ticket":
             result = _exec_assign_ticket(params)
             client.chat_postMessage(channel=channel, thread_ts=thread_ts,
-                                    text=brain.generate_response("assigned a Jira ticket", result))
+                                    text=_jira_assigned_reply(result))
         elif intent == "infra_issue":
             _handle_infra_issue(params, original_text, channel, thread_ts, user_id, _say, client)
         else:

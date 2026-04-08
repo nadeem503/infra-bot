@@ -3,10 +3,12 @@
 Free tier: 1,500 requests/day, 15 req/min — free, no credit card needed.
 Get key at: https://aistudio.google.com/apikey
 
-Uses google-genai (the new official SDK, replaces deprecated google-generativeai).
+Gemini is ONLY called when local_classifier returns None (ambiguous messages).
+Estimated real usage: ~3-5 calls/day under normal operation.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Optional
@@ -26,144 +28,58 @@ _QUOTA_MSG = (
 
 MODEL = "gemini-2.0-flash"
 
+# Cache TTL: 5 min for classify, 10 min for root cause
+_CLASSIFY_CACHE_TTL = 300
+_ROOT_CAUSE_CACHE_TTL = 600
+
 # ---------------------------------------------------------------------------
-# System prompts
+# System prompts — kept MINIMAL (local_classifier handles common cases)
+# Gemini only sees ambiguous messages that local rules couldn't handle.
 # ---------------------------------------------------------------------------
 
 CLASSIFY_SYSTEM = """
-You are the brain of Infra-Bot, an infrastructure assistant for LambdaTest's Real Device Cloud team.
+You are Infra-Bot for LambdaTest's Real Device Cloud. Classify the intent of a Slack message.
 
-## PLATFORM ARCHITECTURE KNOWLEDGE
+Host context:
+- macOS: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl plists)
+- Ubuntu: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
+- AP=10.151.x.x, Dublin=10.100.x.x, US=10.146.x.x
 
-### Host Types
-- macOS hosts: Run iOS devices + LRR (Lambda Remote Runner), Resigner, IHM (iOS Host Manager), Reconciler, LRP
-- Ubuntu hosts: Run Android devices in Docker containers (adbd_<UDID>), RMDM, RDTSA, Reconciler, LRP
+Intents: create_jira | assign_ticket | send_invite | infra_issue | unknown
 
-### Key Services
-macOS:
-- LRR (Lambda Remote Runner): one plist per iOS device — /Library/LaunchDaemons/com.lambda.lambda_remote_runner_<UDID>.plist
-- Resigner (iOS Resigner): /Library/LaunchDaemons/com.lambda.ios_resigner.plist — health: curl http://HOST:6789/health
-- IHM (iOS Host Manager): /Library/LaunchDaemons/com.lambda.ihm.plist
-- LRP (Lambda Remote Provider): /Library/LaunchDaemons/com.lambda.lambda_remote_provider.plist
-- Reconciler: /Library/LaunchDaemons/com.lambda.reconciler.plist
+issue_categories: device_down|reboot|adb_issue|network_issue|db_mismatch|jenkins_failure|
+app_crash|storage_issue|device_disconnected|lrr_down|resigner_down|ihm_down|reconciler_down|
+lrp_down|rmdm_down|rdtsa_down|android_container_down|cert_expired|host_service_status
 
-Ubuntu:
-- RMDM (Real Device Docker Manager): systemd rmdm.service — /home/ltadmin/Documents/mobile-docker-manager/rmdm
-- RDTSA (Real Device Traffic Service): systemd rdtsa.service — /home/ltadmin/rdtsa/rdtsa
-- Android containers: adbd_<UDID> Docker containers
-- Reconciler: systemd reconciler.service
-
-### Region → IP mapping
-- AP (Mumbai): 10.151.x.x
-- Dublin (EU): 10.100.x.x
-- US: 10.146.x.x
-- India: no fixed prefix
-
-### Device status values (in LambdaTest DB)
-active | busy | cleanup | maintenance | faulty
-
-## INTENT CLASSIFICATION
-
-Read the Slack message and return a JSON object classifying the intent.
-
-Supported intents:
-- create_jira      — create a new Jira ticket in project TE
-- assign_ticket    — assign an existing Jira ticket to someone
-- send_invite      — send a calendar/meeting invite
-- infra_issue      — infrastructure problem (device, host, or service issue)
-- unknown          — cannot determine
-
-Supported issue_categories for infra_issue:
-device_down | reboot | adb_issue | network_issue | db_mismatch | jenkins_failure |
-app_crash | storage_issue | device_disconnected |
-lrr_down | resigner_down | ihm_down | reconciler_down | lrp_down |
-rmdm_down | rdtsa_down | android_container_down | cert_expired | host_service_status
-
-Return ONLY this JSON structure:
-{
-  "intent": "<intent>",
-  "confidence": 0.0-1.0,
-  "params": {
-    "title": "ticket summary (create_jira)",
-    "issue_type": "Story|Task|Bug",
-    "assignee": "SLACK_USER_ID or empty string",
-    "cc": ["SLACK_USER_ID"],
-    "ticket_key": "TE-XXX (assign_ticket)",
-    "attendees": ["SLACK_USER_ID"],
-    "frequency": "Friday",
-    "time_range": "1 PM-1:30 PM",
-    "timezone": "IST",
-    "agenda": "...",
-    "issue_category": "<category from list above>",
-    "devices": ["udid or ip or hostname"],
-    "region": "india|us|dublin|ap|null",
-    "host_type": "macos|ubuntu|null"
-  }
-}
-
-Classification rules:
-- Slack user IDs: 11-char strings starting with U — extract from <@U...> format
-- UDIDs: 40-char hex strings
-- IPs: 10.151.x.x → region=ap, 10.100.x.x → region=dublin, 10.146.x.x → region=us
-- "MISMATCH: DB=N, Device=device not found" → issue_category=device_disconnected
-- "LRR", "lambda_remote_runner", "lrr crashed/down" → issue_category=lrr_down, host_type=macos
-- "resigner", "ios_resigner", "6789", "signing failed" → issue_category=resigner_down, host_type=macos
-- "IHM", "ios host manager" → issue_category=ihm_down, host_type=macos
-- "RMDM", "docker manager", "mobile-docker-manager" → issue_category=rmdm_down, host_type=ubuntu
-- "RDTSA", "traffic service" → issue_category=rdtsa_down, host_type=ubuntu
-- "adbd_", "docker container", "android container" → issue_category=android_container_down, host_type=ubuntu
-- "reconciler" → issue_category=reconciler_down
-- "certificate expired", "provisioning profile", "cert renewal" → issue_category=cert_expired, host_type=macos
-- "LRP", "lambda remote provider" → issue_category=lrp_down
-- macOS keywords (launchctl, idevice_id, plist, Xcode, WDA, iOS) → host_type=macos
-- Ubuntu keywords (systemctl, docker, adb devices, Android) → host_type=ubuntu
-- Use thread context to fill missing params in follow-up messages
-- Empty string for missing assignee, empty array for missing cc, null for unknown host_type/region
-"""
-
-RESPOND_SYSTEM = """
-You are Infra-Bot, a friendly infrastructure assistant on Slack for LambdaTest.
-Generate a short, casual Slack reply (2-4 lines max) for what just happened.
+Return ONLY JSON:
+{"intent":"...","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],
+"ticket_key":"","issue_category":"","devices":[],"region":null,"host_type":null}}
 
 Rules:
-- Sound like a helpful human colleague, not a robot
-- Use :white_check_mark: for success, :x: for errors, :thinking_face: for unclear
-- Start success replies with "Done :white_check_mark:"
-- For Jira created: "Done :white_check_mark:\nCreated <URL|KEY> — _title_\nAssigned to <@ID>"
-- Vary phrasing each time — never copy-paste feel
-- Never say "I have successfully" — just confirm naturally
+- UDIDs: 40-char hex. IPs: 10.151→ap, 10.100→dublin, 10.146→us
+- MISMATCH/device not found → device_disconnected
+- Slack IDs: <@U...> format, 11 chars starting with U
+- Use thread context for follow-up messages missing device info
 """
 
-CLARIFY_SYSTEM = """
-You are Infra-Bot. A Slack message was unclear (low confidence classification).
-Suggest exactly 3 possible interpretations as a JSON array.
-
-Each item: {"label": "Short button label (max 5 words)", "intent": "<intent>", "params": {}}
-
-Valid intents: create_jira | assign_ticket | send_invite | infra_issue | unknown
-
-Return ONLY a valid JSON array.
-"""
-
+# Root cause: only called for 3+ correlated signals — keep prompt tight
 ROOT_CAUSE_SYSTEM = """
-You are Infra-Bot analyzing correlated infrastructure signals from the same Slack channel.
-Multiple issues arrived in quick succession.
-
-Produce a concise Slack-formatted root cause hypothesis:
-  :mag: *Root Cause Analysis*
-  • *Likely cause:* <one-line hypothesis>
-  • *Evidence:* <which signals support this>
-  • *Recommended action:* <single best next step>
-
-Keep it under 6 lines. Use :rotating_light: for network/rack-level incidents.
+Infra-Bot root cause analysis. Multiple DC issues in same channel.
+Output concise Slack-formatted hypothesis (max 6 lines):
+:mag: *Root Cause Analysis*
+• *Likely cause:* <one line>
+• *Evidence:* <signals>
+• *Recommended action:* <next step>
+Use :rotating_light: for network/rack-level incidents.
 """
 
 
 class AIBrain:
-    """Gemini-powered intelligence for infra-bot."""
+    """Gemini-powered intelligence — used only when local classifier fails."""
 
     def __init__(self) -> None:
         self._client: Optional[genai.Client] = None
+        self._cache: dict[str, tuple[float, any]] = {}  # key → (expires_ts, value)
 
     @property
     def client(self) -> genai.Client:
@@ -175,12 +91,29 @@ class AIBrain:
             self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
         return self._client
 
+    def _cache_get(self, key: str):
+        entry = self._cache.get(key)
+        if entry and time.time() < entry[0]:
+            logger.debug("Cache hit: %s", key[:20])
+            return entry[1]
+        return None
+
+    def _cache_set(self, key: str, value, ttl: int) -> None:
+        self._cache[key] = (time.time() + ttl, value)
+        # Prune expired entries periodically
+        if len(self._cache) > 200:
+            now = time.time()
+            self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+
+    def _cache_key(self, prefix: str, text: str, extra: str = "") -> str:
+        return hashlib.md5(f"{prefix}:{text}:{extra}".encode()).hexdigest()
+
     def _build_contents(
         self, text: str, thread_history: list[dict] | None = None
     ) -> list[types.Content]:
-        """Build Gemini contents list, prepending thread history for context."""
         contents: list[types.Content] = []
-        for msg in (thread_history or []):
+        # Only include last 3 thread messages to reduce token usage
+        for msg in (thread_history or [])[-3:]:
             role = "user" if msg.get("role") == "user" else "model"
             contents.append(
                 types.Content(role=role, parts=[types.Part(text=msg["content"])])
@@ -203,7 +136,20 @@ class AIBrain:
         return None
 
     def classify(self, text: str, thread_history: list[dict] | None = None) -> dict:
-        """Classify intent + extract params. thread_history enables follow-up context."""
+        """Classify intent + extract params.
+
+        NOTE: call local_classifier first — only call this for ambiguous messages.
+        Thread history limited to last 3 messages to reduce token usage.
+        Results cached for 5 min by message hash.
+        """
+        # Check cache (thread-unaware key for pure text, thread-aware if history present)
+        extra = str(len(thread_history)) if thread_history else ""
+        cache_key = self._cache_key("classify", text[:200], extra)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            logger.debug("Classify cache hit")
+            return cached
+
         try:
             contents = self._build_contents(text, thread_history)
 
@@ -214,17 +160,18 @@ class AIBrain:
                     config=types.GenerateContentConfig(
                         system_instruction=CLASSIFY_SYSTEM,
                         response_mime_type="application/json",
-                        max_output_tokens=512,
+                        max_output_tokens=256,  # reduced from 512 — JSON is small
                     ),
                 )
                 return json.loads(resp.text)
 
             result = self._call_with_retry(_call)
             if result:
-                logger.debug(
-                    "Classified: intent=%s confidence=%.2f",
+                logger.info(
+                    "Gemini classified: intent=%s confidence=%.2f",
                     result.get("intent"), result.get("confidence", 0),
                 )
+                self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
                 return result
         except json.JSONDecodeError as exc:
             logger.error("Gemini returned invalid JSON: %s", exc)
@@ -236,73 +183,87 @@ class AIBrain:
             logger.error("Gemini classify error: %s", exc)
         return {"intent": "unknown", "params": {}, "confidence": 0.0}
 
-    def clarification_options(self, text: str) -> list[dict]:
-        """Return 3 possible interpretations for a low-confidence message."""
-        try:
-            def _call():
-                resp = self.client.models.generate_content(
-                    model=MODEL,
-                    contents=text,
-                    config=types.GenerateContentConfig(
-                        system_instruction=CLARIFY_SYSTEM,
-                        response_mime_type="application/json",
-                        max_output_tokens=512,
-                    ),
-                )
-                return json.loads(resp.text)
-
-            options = self._call_with_retry(_call)
-            return options[:3] if isinstance(options, list) else []
-        except Exception as exc:  # noqa: BLE001
-            logger.error("clarification_options error: %s", exc)
-            return [
-                {"label": "Check device status", "intent": "infra_issue", "params": {"issue_category": "device_down"}},
-                {"label": "Create Jira ticket", "intent": "create_jira", "params": {}},
-                {"label": "Something else", "intent": "unknown", "params": {}},
-            ]
-
     def analyze_root_cause(self, signals_text: str) -> str:
-        """Produce grouped root cause diagnosis from correlated signals."""
-        try:
-            resp = self.client.models.generate_content(
-                model=MODEL,
-                contents=f"Signals:\n{signals_text}",
-                config=types.GenerateContentConfig(
-                    system_instruction=ROOT_CAUSE_SYSTEM,
-                    max_output_tokens=400,
-                ),
-            )
-            return resp.text.strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("analyze_root_cause error: %s", exc)
-            return ":mag: *Root Cause Analysis*\n• Multiple correlated signals detected — manual investigation recommended"
+        """Produce root cause diagnosis from correlated signals.
 
-    def generate_response(self, action: str, context: dict) -> str:
-        """Generate a casual Slack reply for a completed action."""
-        try:
-            prompt = f"Action just taken: {action}\nContext: {json.dumps(context, default=str)}"
+        Cached for 10 min — same set of signals shouldn't re-run analysis.
+        """
+        cache_key = self._cache_key("rca", signals_text)
+        cached = self._cache_get(cache_key)
+        if cached:
+            return cached
 
+        try:
             def _call():
                 resp = self.client.models.generate_content(
                     model=MODEL,
-                    contents=prompt,
+                    contents=f"Signals:\n{signals_text}",
                     config=types.GenerateContentConfig(
-                        system_instruction=RESPOND_SYSTEM,
-                        max_output_tokens=256,
-                        temperature=0.7,
+                        system_instruction=ROOT_CAUSE_SYSTEM,
+                        max_output_tokens=200,  # reduced from 400
                     ),
                 )
                 return resp.text.strip()
 
-            return self._call_with_retry(_call)
+            result = self._call_with_retry(_call)
+            if result:
+                self._cache_set(cache_key, result, _ROOT_CAUSE_CACHE_TTL)
+                return result
         except Exception as exc:  # noqa: BLE001
-            is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
-            if is_quota:
-                logger.warning("Gemini quota exhausted for generate_response")
-                return _QUOTA_MSG
-            logger.error("generate_response error: %s", exc)
-            return "Done :white_check_mark:" if context.get("success") else ":x: Something went wrong."
+            logger.error("analyze_root_cause error: %s", exc)
+        return ":mag: *Root Cause Analysis*\n• Multiple correlated signals — manual investigation recommended"
 
 
-# Module-level singleton — same name, all imports unchanged
+# ---------------------------------------------------------------------------
+# Template responses — replaces generate_response() for known action outcomes
+# No Gemini call needed for these common cases.
+# ---------------------------------------------------------------------------
+
+def _jira_created_reply(result: dict) -> str:
+    if not result.get("success"):
+        err = result.get("error", "unknown error")
+        return f":x: Failed to create Jira ticket — {err}"
+    key  = result.get("key", "?")
+    url  = result.get("url", "")
+    title = result.get("title", "")
+    assignee = result.get("assignee_id", "")
+    link = f"<{url}|{key}>" if url else key
+    reply = f"Done :white_check_mark: Created {link}"
+    if title:
+        reply += f" — _{title}_"
+    if assignee:
+        reply += f"\nAssigned to <@{assignee}>"
+    return reply
+
+
+def _jira_assigned_reply(result: dict) -> str:
+    if not result.get("success"):
+        err = result.get("error", "unknown error")
+        return f":x: Failed to assign ticket — {err}"
+    key      = result.get("key", "?")
+    assignee = result.get("assignee_id", "")
+    reply = f"Done :white_check_mark: {key} assigned"
+    if assignee:
+        reply += f" to <@{assignee}>"
+    return reply
+
+
+def _unclear_reply(text: str) -> str:
+    return (
+        ":thinking_face: Not sure what you mean. Try:\n"
+        "• `@infra-bot device 10.151.x.x is down`\n"
+        "• `@infra-bot LRR down on 10.151.x.x`\n"
+        "• `@infra-bot create jira: <title>`\n"
+        "• `@infra-bot what can you do`"
+    )
+
+
+def _invite_reply(params: dict) -> str:
+    return (
+        ":calendar: Got it — calendar invite feature coming soon. "
+        "For now, please create a Google Calendar event manually."
+    )
+
+
+# Module-level singleton
 brain = AIBrain()
