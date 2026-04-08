@@ -45,6 +45,27 @@ TEAM_FIELD = "b79a27b6-de36-4381-8d60-0b0c3e6477a7"
 
 CONFIDENCE_THRESHOLD = 0.6
 
+# Simple greetings handled locally — no Gemini call needed
+_GREETINGS = {"hello", "hi", "hey", "sup", "yo", "howdy", "hiya"}
+_CAPABILITY_TRIGGERS = {"what can you do", "help", "commands", "capabilities", "what do you do"}
+
+_GREETING_REPLY = (
+    "Hey! :wave: I'm Infra-Bot — your DC infrastructure assistant.\n"
+    "I can help with device issues, ADB restarts, reboots, Jira tickets, and more.\n"
+    "Try: `@infra-bot device 10.151.x.x is down` or `@infra-bot create a jira task: ...`"
+)
+_CAPABILITIES_REPLY = (
+    "*Here's what I can do:*\n"
+    "• :satellite: Detect & fix infra issues (device down, ADB, reboot, DB mismatch)\n"
+    "• :ticket: Create & assign Jira tickets in project TE\n"
+    "• :white_check_mark: Approval workflow with dry-run preview\n"
+    "• :repeat: Deduplicate repeated alerts (15-min cooldown)\n"
+    "• :mag: Root cause analysis for correlated signals\n"
+    "• :zap: Circuit breaker, rate limiting, auto-learning\n"
+    "• :bar_chart: `/infra status|pending|history|faulty count`\n\n"
+    "Just mention me with a description of the problem!"
+)
+
 ISSUE_TO_ACTION: dict[str, str] = {
     "device_down": "device_status",
     "reboot": "ssh_reboot",
@@ -281,6 +302,21 @@ def register_message_listeners(app: App) -> None:
 
         logger.info("@mention from %s in %s", user_id, channel)
 
+        # Strip bot mention prefix for cleaner matching
+        clean = text.split(">", 1)[-1].strip().lower().rstrip("?! ")
+
+        # --- Local greeting / capability handling (no Gemini needed) ---
+        if clean in _GREETINGS:
+            say(text=_GREETING_REPLY, thread_ts=thread_ts)
+            thread_memory.add_message(channel, thread_ts, "user", text)
+            thread_memory.add_message(channel, thread_ts, "assistant", _GREETING_REPLY)
+            return
+        if any(trigger in clean for trigger in _CAPABILITY_TRIGGERS):
+            say(text=_CAPABILITIES_REPLY, thread_ts=thread_ts)
+            thread_memory.add_message(channel, thread_ts, "user", text)
+            thread_memory.add_message(channel, thread_ts, "assistant", _CAPABILITIES_REPLY)
+            return
+
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
         thread_memory.add_message(channel, thread_ts, "user", text)
 
@@ -290,6 +326,12 @@ def register_message_listeners(app: App) -> None:
         confidence = classification.get("confidence", 0.0)
 
         logger.info("Classified: intent=%s confidence=%.2f", intent, confidence)
+
+        # --- Quota exceeded — surface friendly message instead of crashing ---
+        if intent == "_quota_exceeded":
+            from bot.nlp.claude_brain import _QUOTA_MSG
+            say(text=_QUOTA_MSG, thread_ts=thread_ts)
+            return
 
         # --- Confidence gating ---
         if confidence < CONFIDENCE_THRESHOLD and intent != "unknown":

@@ -8,6 +8,7 @@ Uses google-genai (the new official SDK, replaces deprecated google-generativeai
 from __future__ import annotations
 
 import json
+import time
 from typing import Optional
 
 from google import genai
@@ -17,6 +18,11 @@ from config import settings
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_QUOTA_MSG = (
+    ":hourglass: Gemini AI is rate-limited right now (free tier quota). "
+    "Try again in ~1 minute, or add a billing account at aistudio.google.com."
+)
 
 MODEL = "gemini-2.0-flash"
 
@@ -133,44 +139,70 @@ class AIBrain:
         contents.append(types.Content(role="user", parts=[types.Part(text=text)]))
         return contents
 
+    def _call_with_retry(self, fn, retries: int = 2):
+        """Call fn(), retrying once after 60s on 429 quota errors."""
+        for attempt in range(retries):
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+                if is_quota and attempt < retries - 1:
+                    logger.warning("Gemini 429 — waiting 60s before retry %d", attempt + 1)
+                    time.sleep(60)
+                    continue
+                raise
+        return None
+
     def classify(self, text: str, thread_history: list[dict] | None = None) -> dict:
         """Classify intent + extract params. thread_history enables follow-up context."""
         try:
             contents = self._build_contents(text, thread_history)
-            resp = self.client.models.generate_content(
-                model=MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=CLASSIFY_SYSTEM,
-                    response_mime_type="application/json",
-                    max_output_tokens=512,
-                ),
-            )
-            result = json.loads(resp.text)
-            logger.debug(
-                "Classified: intent=%s confidence=%.2f",
-                result.get("intent"), result.get("confidence", 0),
-            )
-            return result
+
+            def _call():
+                resp = self.client.models.generate_content(
+                    model=MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=CLASSIFY_SYSTEM,
+                        response_mime_type="application/json",
+                        max_output_tokens=512,
+                    ),
+                )
+                return json.loads(resp.text)
+
+            result = self._call_with_retry(_call)
+            if result:
+                logger.debug(
+                    "Classified: intent=%s confidence=%.2f",
+                    result.get("intent"), result.get("confidence", 0),
+                )
+                return result
         except json.JSONDecodeError as exc:
             logger.error("Gemini returned invalid JSON: %s", exc)
         except Exception as exc:  # noqa: BLE001
+            is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+            if is_quota:
+                logger.warning("Gemini quota exhausted for classify")
+                return {"intent": "_quota_exceeded", "params": {}, "confidence": 0.0}
             logger.error("Gemini classify error: %s", exc)
         return {"intent": "unknown", "params": {}, "confidence": 0.0}
 
     def clarification_options(self, text: str) -> list[dict]:
         """Return 3 possible interpretations for a low-confidence message."""
         try:
-            resp = self.client.models.generate_content(
-                model=MODEL,
-                contents=text,
-                config=types.GenerateContentConfig(
-                    system_instruction=CLARIFY_SYSTEM,
-                    response_mime_type="application/json",
-                    max_output_tokens=512,
-                ),
-            )
-            options = json.loads(resp.text)
+            def _call():
+                resp = self.client.models.generate_content(
+                    model=MODEL,
+                    contents=text,
+                    config=types.GenerateContentConfig(
+                        system_instruction=CLARIFY_SYSTEM,
+                        response_mime_type="application/json",
+                        max_output_tokens=512,
+                    ),
+                )
+                return json.loads(resp.text)
+
+            options = self._call_with_retry(_call)
             return options[:3] if isinstance(options, list) else []
         except Exception as exc:  # noqa: BLE001
             logger.error("clarification_options error: %s", exc)
@@ -200,17 +232,25 @@ class AIBrain:
         """Generate a casual Slack reply for a completed action."""
         try:
             prompt = f"Action just taken: {action}\nContext: {json.dumps(context, default=str)}"
-            resp = self.client.models.generate_content(
-                model=MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=RESPOND_SYSTEM,
-                    max_output_tokens=256,
-                    temperature=0.7,
-                ),
-            )
-            return resp.text.strip()
+
+            def _call():
+                resp = self.client.models.generate_content(
+                    model=MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=RESPOND_SYSTEM,
+                        max_output_tokens=256,
+                        temperature=0.7,
+                    ),
+                )
+                return resp.text.strip()
+
+            return self._call_with_retry(_call)
         except Exception as exc:  # noqa: BLE001
+            is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+            if is_quota:
+                logger.warning("Gemini quota exhausted for generate_response")
+                return _QUOTA_MSG
             logger.error("generate_response error: %s", exc)
             return "Done :white_check_mark:" if context.get("success") else ":x: Something went wrong."
 
