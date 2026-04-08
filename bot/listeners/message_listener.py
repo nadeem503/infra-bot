@@ -431,3 +431,8 @@ def register_message_listeners(app: App) -> None:
                 channel=channel, thread_ts=thread_ts,
                 text=f":thinking_face: Got it — treating as: *{chosen.get('label', 'unknown')}*. Try rephrasing for a better result.",
             )
+
+    @app.event("message")
+    def handle_message_events(body, logger) -> None:  # noqa: ANN001
+        """No-op handler to silence Slack Bolt 404 warnings for message events."""
+        pass
