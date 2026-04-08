@@ -15,6 +15,7 @@ Flow on every @mention:
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 from slack_bolt import App
@@ -43,6 +44,11 @@ _formatter = SlackFormatter()
 JIRA_BROWSE = "https://lambdatest.atlassian.net/browse"
 
 CONFIDENCE_THRESHOLD = 0.6
+
+def _is_thin_text(s: str) -> bool:
+    """True when text has no meaningful words/IPs/serials (e.g. just '👆' or whitespace)."""
+    return not re.search(r'[a-zA-Z0-9]{3,}', s)
+
 
 # Simple greetings handled locally — no Gemini call needed
 _GREETINGS = {"hello", "hi", "hey", "sup", "yo", "howdy", "hiya"}
@@ -412,13 +418,34 @@ def register_message_listeners(app: App) -> None:
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
         thread_memory.add_message(channel, thread_ts, "user", text)
 
+        # --- Enrich thin mentions with thread context ---
+        # When user types "10.x.x.x,SERIAL check connected" then "@bot 👆" as a
+        # separate message, the app_mention text is just "<@BOT> 👆" — no device info.
+        # Recover context from the most recent prior substantive message in the thread.
+        classify_text = text
+        if _is_thin_text(clean):
+            try:
+                replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=20)
+                for msg in reversed(replies.get("messages", [])):
+                    if msg.get("ts") == event.get("ts"):
+                        continue  # skip the current mention message itself
+                    if msg.get("bot_id"):
+                        continue  # skip bot messages
+                    prior = msg.get("text", "")
+                    if not _is_thin_text(prior):
+                        classify_text = prior + " " + text
+                        logger.info("Thin mention enriched with prior thread msg: %.80s", prior)
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Thread context fetch failed: %s", exc)
+
         # --- Try local classifier first (no Gemini call) ---
-        classification = classify_local(text, thread_history or None)
+        classification = classify_local(classify_text, thread_history or None)
         if classification:
             source = "local"
         else:
             # Local classifier couldn't handle it — fall back to Gemini
-            classification = brain.classify(text, thread_history=thread_history or None)
+            classification = brain.classify(classify_text, thread_history=thread_history or None)
             source = "gemini"
 
         intent = classification.get("intent", "unknown")
