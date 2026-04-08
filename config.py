@@ -14,8 +14,8 @@ class Settings:
     SLACK_APP_TOKEN: str = os.getenv("SLACK_APP_TOKEN", "")
     APPROVER_SLACK_ID: str = os.getenv("APPROVER_SLACK_ID", "U04UTG30V9A")
 
-    # Claude AI
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    # Google Gemini AI (free tier — get key at https://aistudio.google.com/apikey)
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
