@@ -1,8 +1,8 @@
 """Device connectivity check action.
 
 Immediately SSHes to the host (internal DC network) and runs:
-  adb devices        — list connected devices
-  adb -s <UDID> get-state — specific device status (if UDID given)
+  docker exec -it adbd_<UDID> adb devices  — Android container check
+  adb -s <UDID> get-state                  — fallback state check
 
 No approval workflow — read-only diagnostic, returns result directly.
 """
@@ -30,8 +30,11 @@ class DeviceCheckAction:
         if not host:
             return ":warning: No host IP found in your message. Try: `@infra-bot 10.151.2.22,S499NNSGU8GUW8O7 check if connected`"
 
-        # Run adb devices on the host
-        result = ssh_exec(host, "adb devices")
+        if not udid:
+            return ":warning: No device UDID/serial found. Try: `@infra-bot 10.151.2.22,S499NNSGU8GUW8O7 check if connected`"
+
+        cmd = f"docker exec -i adbd_{udid} adb devices 2>&1"
+        result = ssh_exec(host, cmd)
 
         if not result["success"] and result["exit_code"] == -1:
             return (
@@ -41,90 +44,81 @@ class DeviceCheckAction:
 
         adb_output = result["output"]
 
-        # If we have a specific UDID/serial, check it
-        if udid:
-            lines = adb_output.splitlines()
-            device_line = next((l for l in lines if udid in l), None)
+        # Check if docker container exists / is running
+        if "No such container" in adb_output or "Error" in adb_output:
+            gs = ssh_exec(host, f"docker ps --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
+            container_status = gs["output"].strip() or "not found"
+            return (
+                f":x: *Device `{udid}`* — container `adbd_{udid}` issue on `{host}`\n"
+                f"```{adb_output[:300]}```\n"
+                f"Container status: `{container_status}`"
+            )
 
-            if device_line:
-                parts = device_line.strip().split("\t")
-                status = parts[1].strip() if len(parts) > 1 else "found"
-                icon = ":white_check_mark:" if status == "device" else ":warning:"
-                state_str = {
-                    "device":       "connected & authorized",
-                    "unauthorized": "connected but UNAUTHORIZED",
-                    "offline":      "OFFLINE",
-                    "no permissions": "NO PERMISSIONS",
-                }.get(status, status)
-                reply = (
-                    f"{icon} *Device `{udid}`* — `{state_str}` on host `{host}`\n"
-                    f"```{adb_output}```"
-                )
-            else:
-                # Device not in adb devices list — try get-state for more info
-                gs = ssh_exec(host, f"adb -s {udid} get-state")
-                gs_out = gs["output"] or gs["error"] or "not found"
-                reply = (
-                    f":x: *Device `{udid}`* — NOT found in `adb devices` on host `{host}`\n"
-                    f"```{adb_output}```\n"
-                    f"get-state: `{gs_out.strip()[:100]}`"
-                )
+        device_line = next((l for l in adb_output.splitlines() if udid in l), None)
+        if device_line:
+            parts = device_line.strip().split("\t")
+            status = parts[1].strip() if len(parts) > 1 else "found"
+            icon = ":white_check_mark:" if status == "device" else ":warning:"
+            state_str = {
+                "device":         "connected & authorized",
+                "unauthorized":   "connected but UNAUTHORIZED",
+                "offline":        "OFFLINE",
+                "no permissions": "NO PERMISSIONS",
+            }.get(status, status)
+            reply = (
+                f"{icon} *Device `{udid}`* — `{state_str}` on host `{host}`\n"
+                f"```{adb_output}```"
+            )
         else:
-            # No specific UDID — just return all devices
-            if adb_output and "List of devices attached" in adb_output:
-                device_lines = [l for l in adb_output.splitlines() if "\t" in l]
-                count = len(device_lines)
-                icon = ":white_check_mark:" if count > 0 else ":warning:"
-                reply = (
-                    f"{icon} *ADB devices on `{host}`* — {count} device(s) attached\n"
-                    f"```{adb_output}```"
-                )
-            else:
-                reply = (
-                    f":information_source: *ADB output from `{host}`*\n"
-                    f"```{adb_output or '(empty)'}```"
-                )
+            gs = ssh_exec(host, f"docker exec -i adbd_{udid} adb -s {udid} get-state 2>&1")
+            gs_out = gs["output"] or gs["error"] or "not found"
+            reply = (
+                f":x: *Device `{udid}`* — NOT found inside `adbd_{udid}` on `{host}`\n"
+                f"```{adb_output}```\n"
+                f"get-state: `{gs_out.strip()[:100]}`"
+            )
 
         logger.info("device_check host=%s udid=%s success=%s", host, udid, result["success"])
         return reply
 
     def _execute_multi(self, hosts: list, udids: list) -> str:
-        """Check connectivity for multiple host,udid pairs (from a mapping list)."""
-        # Fetch adb devices once per unique host
-        host_results: dict[str, dict] = {}
-        for h in dict.fromkeys(hosts):  # unique, preserve order
-            host_results[h] = ssh_exec(h, "adb devices")
-
+        """Check connectivity for multiple host,udid pairs via docker exec."""
+        pairs = list(zip(hosts, udids))[:20]  # cap at 20 pairs
         lines = [":mag: *Device connectivity check*\n"]
-        pairs = list(zip(hosts, udids)) if udids else [(h, "") for h in hosts]
-
         ok = fail = 0
-        for host_ip, serial in pairs[:20]:  # cap at 20 pairs
-            res = host_results.get(host_ip, {})
+
+        for host_ip, serial in pairs:
+            if not serial:
+                lines.append(f":warning: `{host_ip}` — no UDID, skipped")
+                continue
+
+            cmd = f"docker exec -i adbd_{serial} adb devices 2>&1"
+            res = ssh_exec(host_ip, cmd)
+
             if not res.get("success") and res.get("exit_code") == -1:
-                lines.append(f":x: `{host_ip}` — SSH failed: {res.get('error', '')[:60]}")
+                lines.append(f":x: `{host_ip}` / `{serial}` — SSH failed")
                 fail += 1
                 continue
 
             adb_out = res.get("output", "")
-            if serial:
-                device_line = next((l for l in adb_out.splitlines() if serial in l), None)
-                if device_line:
-                    parts = device_line.strip().split("\t")
-                    status = parts[1].strip() if len(parts) > 1 else "found"
-                    icon = ":white_check_mark:" if status == "device" else ":warning:"
-                    state = {"device": "authorized", "unauthorized": "UNAUTHORIZED",
-                             "offline": "OFFLINE"}.get(status, status)
-                    lines.append(f"{icon} `{host_ip}` / `{serial}` — {state}")
-                    ok += 1
-                else:
-                    lines.append(f":x: `{host_ip}` / `{serial}` — not found in adb devices")
-                    fail += 1
-            else:
-                device_count = sum(1 for l in adb_out.splitlines() if "\t" in l)
-                lines.append(f":white_check_mark: `{host_ip}` — {device_count} device(s) attached")
-                ok += 1
+            if "No such container" in adb_out or ("Error" in adb_out and serial not in adb_out):
+                lines.append(f":x: `{host_ip}` / `{serial}` — container `adbd_{serial}` not running")
+                fail += 1
+                continue
 
-        lines.append(f"\n*Summary:* {ok} OK, {fail} failed out of {len(pairs[:20])} pairs")
+            device_line = next((l for l in adb_out.splitlines() if serial in l), None)
+            if device_line:
+                parts = device_line.strip().split("\t")
+                status = parts[1].strip() if len(parts) > 1 else "found"
+                icon = ":white_check_mark:" if status == "device" else ":warning:"
+                state = {"device": "authorized", "unauthorized": "UNAUTHORIZED",
+                         "offline": "OFFLINE"}.get(status, status)
+                lines.append(f"{icon} `{host_ip}` / `{serial}` — {state}")
+                ok += 1
+            else:
+                lines.append(f":x: `{host_ip}` / `{serial}` — not found inside container")
+                fail += 1
+
+        lines.append(f"\n*Summary:* {ok} OK, {fail} failed out of {len(pairs)} pairs")
         logger.info("device_check multi: %d pairs, %d ok, %d fail", len(pairs), ok, fail)
         return "\n".join(lines)
