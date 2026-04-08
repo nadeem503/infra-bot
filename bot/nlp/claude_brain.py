@@ -1,30 +1,24 @@
-"""AI brain for infra-bot — powered by Google Gemini.
+"""AI brain for infra-bot — powered by Google Gemini (google-genai SDK).
 
-Free tier (google-generativeai + gemini-1.5-flash):
-  - 1,500 requests/day
-  - 15 requests/minute
-  - 1 million tokens/minute
-  → More than enough for a Slack bot.
+Free tier: 1,500 requests/day, 15 req/min — free, no credit card needed.
+Get key at: https://aistudio.google.com/apikey
 
-Get your free API key at: https://aistudio.google.com/apikey
-
-Uses:
-  1. classify()              — intent + param extraction (JSON mode, never hallucinates format)
-  2. clarification_options() — 3 possible interpretations for low-confidence messages
-  3. analyze_root_cause()    — grouped diagnosis from correlated signals
-  4. generate_response()     — casual human-sounding Slack replies
+Uses google-genai (the new official SDK, replaces deprecated google-generativeai).
 """
 from __future__ import annotations
 
 import json
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from config import settings
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+MODEL = "gemini-2.0-flash"
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -111,65 +105,53 @@ Keep it under 6 lines. Use :rotating_light: for network/rack-level incidents.
 
 
 class AIBrain:
-    """Gemini-powered intelligence for infra-bot. Drop-in replacement for the Anthropic brain."""
+    """Gemini-powered intelligence for infra-bot."""
 
-    _classify_model: Optional[genai.GenerativeModel] = None
-    _respond_model: Optional[genai.GenerativeModel] = None
-    _clarify_model: Optional[genai.GenerativeModel] = None
-    _root_model: Optional[genai.GenerativeModel] = None
+    def __init__(self) -> None:
+        self._client: Optional[genai.Client] = None
 
-    def _init(self) -> None:
-        if self._classify_model is not None:
-            return
-        if not settings.GEMINI_API_KEY:
-            raise RuntimeError("GEMINI_API_KEY is not set — get a free key at https://aistudio.google.com/apikey")
-        genai.configure(api_key=settings.GEMINI_API_KEY)
+    @property
+    def client(self) -> genai.Client:
+        if self._client is None:
+            if not settings.GEMINI_API_KEY:
+                raise RuntimeError(
+                    "GEMINI_API_KEY is not set — get a free key at https://aistudio.google.com/apikey"
+                )
+            self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        return self._client
 
-        # JSON mode for classification — Gemini guarantees valid JSON output
-        json_config = genai.GenerationConfig(response_mime_type="application/json")
-        text_config = genai.GenerationConfig(temperature=0.7, max_output_tokens=300)
-
-        self._classify_model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=CLASSIFY_SYSTEM,
-            generation_config=json_config,
-        )
-        self._respond_model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=RESPOND_SYSTEM,
-            generation_config=text_config,
-        )
-        self._clarify_model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=CLARIFY_SYSTEM,
-            generation_config=json_config,
-        )
-        self._root_model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=ROOT_CAUSE_SYSTEM,
-            generation_config=text_config,
-        )
+    def _build_contents(
+        self, text: str, thread_history: list[dict] | None = None
+    ) -> list[types.Content]:
+        """Build Gemini contents list, prepending thread history for context."""
+        contents: list[types.Content] = []
+        for msg in (thread_history or []):
+            role = "user" if msg.get("role") == "user" else "model"
+            contents.append(
+                types.Content(role=role, parts=[types.Part(text=msg["content"])])
+            )
+        contents.append(types.Content(role="user", parts=[types.Part(text=text)]))
+        return contents
 
     def classify(self, text: str, thread_history: list[dict] | None = None) -> dict:
         """Classify intent + extract params. thread_history enables follow-up context."""
         try:
-            self._init()
-
-            if thread_history:
-                # Convert thread history to Gemini chat format
-                history = []
-                for msg in thread_history:
-                    role = "user" if msg["role"] == "user" else "model"
-                    history.append({"role": role, "parts": [msg["content"]]})
-                chat = self._classify_model.start_chat(history=history)
-                resp = chat.send_message(text)
-            else:
-                resp = self._classify_model.generate_content(text)
-
+            contents = self._build_contents(text, thread_history)
+            resp = self.client.models.generate_content(
+                model=MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=CLASSIFY_SYSTEM,
+                    response_mime_type="application/json",
+                    max_output_tokens=512,
+                ),
+            )
             result = json.loads(resp.text)
-            logger.debug("Classified: intent=%s confidence=%.2f", result.get("intent"), result.get("confidence", 0))
+            logger.debug(
+                "Classified: intent=%s confidence=%.2f",
+                result.get("intent"), result.get("confidence", 0),
+            )
             return result
-
         except json.JSONDecodeError as exc:
             logger.error("Gemini returned invalid JSON: %s", exc)
         except Exception as exc:  # noqa: BLE001
@@ -179,8 +161,15 @@ class AIBrain:
     def clarification_options(self, text: str) -> list[dict]:
         """Return 3 possible interpretations for a low-confidence message."""
         try:
-            self._init()
-            resp = self._clarify_model.generate_content(text)
+            resp = self.client.models.generate_content(
+                model=MODEL,
+                contents=text,
+                config=types.GenerateContentConfig(
+                    system_instruction=CLARIFY_SYSTEM,
+                    response_mime_type="application/json",
+                    max_output_tokens=512,
+                ),
+            )
             options = json.loads(resp.text)
             return options[:3] if isinstance(options, list) else []
         except Exception as exc:  # noqa: BLE001
@@ -194,8 +183,14 @@ class AIBrain:
     def analyze_root_cause(self, signals_text: str) -> str:
         """Produce grouped root cause diagnosis from correlated signals."""
         try:
-            self._init()
-            resp = self._root_model.generate_content(f"Signals:\n{signals_text}")
+            resp = self.client.models.generate_content(
+                model=MODEL,
+                contents=f"Signals:\n{signals_text}",
+                config=types.GenerateContentConfig(
+                    system_instruction=ROOT_CAUSE_SYSTEM,
+                    max_output_tokens=400,
+                ),
+            )
             return resp.text.strip()
         except Exception as exc:  # noqa: BLE001
             logger.error("analyze_root_cause error: %s", exc)
@@ -204,14 +199,21 @@ class AIBrain:
     def generate_response(self, action: str, context: dict) -> str:
         """Generate a casual Slack reply for a completed action."""
         try:
-            self._init()
             prompt = f"Action just taken: {action}\nContext: {json.dumps(context, default=str)}"
-            resp = self._respond_model.generate_content(prompt)
+            resp = self.client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=RESPOND_SYSTEM,
+                    max_output_tokens=256,
+                    temperature=0.7,
+                ),
+            )
             return resp.text.strip()
         except Exception as exc:  # noqa: BLE001
             logger.error("generate_response error: %s", exc)
             return "Done :white_check_mark:" if context.get("success") else ":x: Something went wrong."
 
 
-# Module-level singleton — same name as before so all imports work unchanged
+# Module-level singleton — same name, all imports unchanged
 brain = AIBrain()
