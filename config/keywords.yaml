@@ -1,4 +1,5 @@
 # Keyword to issue category mapping
+# Real-device platform aware: iOS (macOS hosts) + Android (Ubuntu hosts)
 
 reboot:
   keywords:
@@ -36,8 +37,7 @@ device_disconnected:
     - "MISMATCH"
   severity: high
   auto_action: device_disconnected
-  # Note: "MISMATCH: DB=N, Device=device not found" patterns are handled here.
-  # Bot will skip normal flow and use DeviceDisconnectedAction (retry-once ADB reconnect).
+  # "MISMATCH: DB=N, Device=device not found" → DeviceDisconnectedAction (retry-once ADB reconnect)
 
 db_mismatch:
   keywords:
@@ -56,6 +56,8 @@ adb_issue:
     - "adb offline"
     - "adb unauthorized"
     - "adb not found"
+    - "adb container"
+    - "adbd"
   severity: medium
   auto_action: adb_restart
 
@@ -100,3 +102,143 @@ storage_issue:
     - "low storage"
   severity: medium
   auto_action: adb_clear_storage
+
+# ── iOS / macOS host services ─────────────────────────────────────────────────
+
+lrr_down:
+  keywords:
+    - "lrr"
+    - "lambda remote runner"
+    - "remote runner"
+    - "lambda_remote_runner"
+    - "lrr not running"
+    - "lrr crashed"
+    - "lrr down"
+    - "device not visible"
+    - "idevice_id empty"
+  severity: high
+  auto_action: lrr_restart
+  host_type: macos
+  # Restart: launchctl unload/load /Library/LaunchDaemons/com.lambda.lambda_remote_runner_<UDID>.plist
+
+resigner_down:
+  keywords:
+    - "resigner"
+    - "ios resigner"
+    - "ios-resigner"
+    - "resign"
+    - "resigner down"
+    - "resigner not responding"
+    - "resigner health"
+    - "6789"
+    - "resigner failed"
+    - "signing failed"
+  severity: high
+  auto_action: resigner_restart
+  host_type: macos
+  # Health check: curl http://HOST:6789/health
+  # Restart: launchctl unload/load /Library/LaunchDaemons/com.lambda.ios_resigner.plist
+  # Also: security unlock-keychain -p <pwd> /Users/ltadmin/Library/Keychains/login.keychain-db
+
+ihm_down:
+  keywords:
+    - "ihm"
+    - "ios host manager"
+    - "host manager"
+    - "ios-host-manager"
+    - "ihm down"
+    - "ihm crashed"
+    - "ihm not running"
+  severity: high
+  auto_action: ihm_restart
+  host_type: macos
+  # Restart: launchctl unload/load /Library/LaunchDaemons/com.lambda.ihm.plist
+
+reconciler_down:
+  keywords:
+    - "reconciler"
+    - "reconciler down"
+    - "reconciler crashed"
+    - "reconciler not running"
+    - "reconciler high cpu"
+    - "reconciler stuck"
+  severity: medium
+  auto_action: reconciler_restart
+  # macOS: launchctl unload/load /Library/LaunchDaemons/com.lambda.reconciler.plist
+  # Ubuntu: systemctl restart reconciler
+
+# ── Android / Ubuntu host services ───────────────────────────────────────────
+
+rmdm_down:
+  keywords:
+    - "rmdm"
+    - "docker manager"
+    - "mobile docker manager"
+    - "rmdm down"
+    - "rmdm crashed"
+    - "rmdm not running"
+    - "rmdm service"
+  severity: high
+  auto_action: rmdm_restart
+  host_type: ubuntu
+  # Restart: systemctl daemon-reload && systemctl restart rmdm
+  # Binary: /home/ltadmin/Documents/mobile-docker-manager/rmdm
+
+rdtsa_down:
+  keywords:
+    - "rdtsa"
+    - "traffic service"
+    - "rdtsa down"
+    - "rdtsa crashed"
+    - "rdtsa not running"
+    - "real device traffic"
+  severity: high
+  auto_action: rdtsa_restart
+  host_type: ubuntu
+  # Restart: systemctl restart rdtsa
+  # Binary: /home/ltadmin/rdtsa/rdtsa
+
+android_container_down:
+  keywords:
+    - "docker container"
+    - "adbd container"
+    - "adbd dead"
+    - "container down"
+    - "docker reboot"
+    - "android docker"
+  severity: high
+  auto_action: android_container_restart
+  host_type: ubuntu
+  # docker restart adbd_<UDID>
+  # or: docker exec -t adbd_<UDID> adb -s <UDID> reboot
+
+# ── Certificate / provisioning issues ─────────────────────────────────────────
+
+cert_expired:
+  keywords:
+    - "certificate expired"
+    - "cert expired"
+    - "provisioning profile"
+    - "profile expired"
+    - "keychain"
+    - "signing identity"
+    - "code signing"
+    - "cert renewal"
+  severity: high
+  auto_action: resigner_restart
+  host_type: macos
+  # Trigger cert renewal via GitHub Actions workflow
+
+lrp_down:
+  keywords:
+    - "lrp"
+    - "lambda remote provider"
+    - "remote provider"
+    - "lambda_remote_provider"
+    - "lrp down"
+    - "lrp crashed"
+    - "provider not running"
+  severity: high
+  auto_action: lrp_restart
+  # macOS: launchctl unload/load LambdaRemoteProvider plist
+  # Ubuntu: systemctl restart lambda_remote_provider

@@ -55,27 +55,52 @@ _GREETING_REPLY = (
     "Try: `@infra-bot device 10.151.x.x is down` or `@infra-bot create a jira task: ...`"
 )
 _CAPABILITIES_REPLY = (
-    "*Here's what I can do:*\n"
-    "• :satellite: Detect & fix infra issues (device down, ADB, reboot, DB mismatch)\n"
+    "*Here's what I can do:*\n\n"
+    "*iOS / macOS hosts:*\n"
+    "• :arrows_counterclockwise: Restart LRR (`lambda_remote_runner`) per device UDID\n"
+    "• :lock: Restart Resigner + unlock keychain (health: port 6789)\n"
+    "• :house: Restart IHM (iOS Host Manager)\n"
+    "• :recycle: Restart LRP (Lambda Remote Provider)\n"
+    "• :mag: Reconciler restart (macOS launchctl)\n\n"
+    "*Android / Ubuntu hosts:*\n"
+    "• :whale: Restart RMDM (Real Device Docker Manager)\n"
+    "• :arrows_counterclockwise: Restart RDTSA (Traffic Service)\n"
+    "• :package: Restart `adbd_<UDID>` Docker container\n"
+    "• :recycle: Restart Reconciler (systemctl)\n\n"
+    "*General:*\n"
+    "• :satellite: Device down, ADB offline, reboot, network, DB mismatch\n"
     "• :ticket: Create & assign Jira tickets in project TE\n"
     "• :white_check_mark: Approval workflow with dry-run preview\n"
-    "• :repeat: Deduplicate repeated alerts (15-min cooldown)\n"
+    "• :repeat: Dedup alerts (15-min cooldown), circuit breaker, rate limiting\n"
     "• :mag: Root cause analysis for correlated signals\n"
-    "• :zap: Circuit breaker, rate limiting, auto-learning\n"
     "• :bar_chart: `/infra status|pending|history|faulty count`\n\n"
-    "Just mention me with a description of the problem!"
+    "Just describe the problem: `@infra-bot LRR down on host 10.151.2.50`"
 )
 
 ISSUE_TO_ACTION: dict[str, str] = {
-    "device_down": "device_status",
-    "reboot": "ssh_reboot",
-    "adb_issue": "adb_restart",
-    "network_issue": "device_status",
-    "db_mismatch": "db_query",
-    "jenkins_failure": "jenkins_trigger",
-    "app_crash": "adb_logcat",
-    "storage_issue": "adb_clear_storage",
-    "device_disconnected": "device_disconnected",
+    # Generic device issues
+    "device_down":              "device_status",
+    "reboot":                   "ssh_reboot",
+    "adb_issue":                "adb_restart",
+    "network_issue":            "device_status",
+    "db_mismatch":              "db_query",
+    "jenkins_failure":          "jenkins_trigger",
+    "app_crash":                "adb_logcat",
+    "storage_issue":            "adb_clear_storage",
+    "device_disconnected":      "device_disconnected",
+    # macOS / iOS services
+    "lrr_down":                 "lrr_restart",
+    "resigner_down":            "resigner_restart",
+    "ihm_down":                 "ihm_restart",
+    "reconciler_down":          "reconciler_restart",
+    "lrp_down":                 "lrp_restart",
+    "cert_expired":             "resigner_restart",
+    # Ubuntu / Android services
+    "rmdm_down":                "rmdm_restart",
+    "rdtsa_down":               "rdtsa_restart",
+    "android_container_down":   "android_container_restart",
+    # Generic host check
+    "host_service_status":      "host_service_status",
 }
 
 
@@ -86,15 +111,35 @@ def _get_action_class(action_type: str):
     from bot.actions.jenkins_action import JenkinsAction  # noqa: PLC0415
     from bot.actions.ssh_action import SSHAction  # noqa: PLC0415
     from bot.actions.device_disconnected_action import DeviceDisconnectedAction  # noqa: PLC0415
+    from bot.actions.macos_service_action import (  # noqa: PLC0415
+        LRRRestartAction, ResignerRestartAction, IHMRestartAction,
+        ReconcilerRestartAction, LRPRestartAction,
+    )
+    from bot.actions.ubuntu_service_action import (  # noqa: PLC0415
+        RMDMRestartAction, RDTSARestartAction,
+        AndroidContainerRestartAction, AllServicesStatusAction,
+    )
     return {
-        "ssh_reboot": SSHAction,
-        "device_status": DeviceStatusAction,
-        "adb_restart": ADBAction,
-        "adb_logcat": ADBAction,
-        "adb_clear_storage": ADBAction,
-        "db_query": DBAction,
-        "jenkins_trigger": JenkinsAction,
-        "device_disconnected": DeviceDisconnectedAction,
+        # Generic device actions
+        "ssh_reboot":                SSHAction,
+        "device_status":             DeviceStatusAction,
+        "adb_restart":               ADBAction,
+        "adb_logcat":                ADBAction,
+        "adb_clear_storage":         ADBAction,
+        "db_query":                  DBAction,
+        "jenkins_trigger":           JenkinsAction,
+        "device_disconnected":       DeviceDisconnectedAction,
+        # macOS / iOS service actions
+        "lrr_restart":               LRRRestartAction,
+        "resigner_restart":          ResignerRestartAction,
+        "ihm_restart":               IHMRestartAction,
+        "reconciler_restart":        ReconcilerRestartAction,
+        "lrp_restart":               LRPRestartAction,
+        # Ubuntu / Android service actions
+        "rmdm_restart":              RMDMRestartAction,
+        "rdtsa_restart":             RDTSARestartAction,
+        "android_container_restart": AndroidContainerRestartAction,
+        "host_service_status":       AllServicesStatusAction,
     }.get(action_type)
 
 
