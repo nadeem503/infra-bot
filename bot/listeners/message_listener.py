@@ -14,11 +14,9 @@ Flow on every @mention:
 """
 from __future__ import annotations
 
-import base64
 import json
 import uuid
 
-import requests
 from slack_bolt import App
 
 from bot.approval.approval_manager import approval_manager
@@ -31,6 +29,10 @@ from bot.analyzers.root_cause_analyzer import (
 )
 from bot.nlp.claude_brain import brain, _jira_created_reply, _jira_assigned_reply, _unclear_reply, _invite_reply
 from bot.nlp.local_classifier import classify_local
+from bot.actions.jira_client import (
+    create_issue, assign_issue, transition_issue,
+    resolve_slack_user_to_jira, check_ticket_completeness,
+)
 from config import settings
 from utils.device_name import get_device_name
 from utils.logger import get_logger
@@ -38,11 +40,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 _formatter = SlackFormatter()
 
-JIRA_BASE = f"https://api.atlassian.com/ex/jira/{settings.JIRA_CLOUD_ID}/rest/api/3"
 JIRA_BROWSE = "https://lambdatest.atlassian.net/browse"
-PROJECT_KEY = "TE"
-ISSUE_TYPE_ID = "10204"
-TEAM_FIELD = "b79a27b6-de36-4381-8d60-0b0c3e6477a7"
 
 CONFIDENCE_THRESHOLD = 0.6
 
@@ -143,60 +141,71 @@ def _get_action_class(action_type: str):
     }.get(action_type)
 
 
-def _jira_headers() -> dict:
-    creds = base64.b64encode(
-        f"{settings.JIRA_EMAIL}:{settings.JIRA_API_TOKEN}".encode()
-    ).decode()
-    return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
-
-
-def _exec_create_jira(params: dict) -> dict:
+def _exec_create_jira(params: dict, slack_client=None) -> dict:
+    """Create a Jira ticket using the full jira_client (ADF, custom fields, user resolution)."""
     title = params.get("title", "").strip()
-    assignee = params.get("assignee", "")
-    cc: list[str] = params.get("cc", []) or []
-    issue_type = params.get("issue_type", "Task")
     if not title:
         return {"success": False, "error": "Could not determine ticket title"}
-    if not all([settings.JIRA_EMAIL, settings.JIRA_API_TOKEN]):
-        return {"success": False, "error": "Jira credentials not configured"}
-    payload: dict = {
-        "fields": {
-            "project": {"key": PROJECT_KEY},
-            "summary": title,
-            "issuetype": {"id": ISSUE_TYPE_ID},
-            "customfield_10001": TEAM_FIELD,
-        }
-    }
-    if assignee:
-        payload["fields"]["assignee"] = {"id": assignee}
-    try:
-        resp = requests.post(f"{JIRA_BASE}/issue", json=payload, headers=_jira_headers(), timeout=15)
-        data = resp.json()
-    except Exception as exc:  # noqa: BLE001
-        return {"success": False, "error": type(exc).__name__}
-    if resp.status_code != 201:
-        return {"success": False, "error": data.get("errors", data.get("errorMessages", []))}
-    key = data.get("key", "?")
-    return {"success": True, "ticket_key": key, "url": f"{JIRA_BROWSE}/{key}", "title": title, "assignee": assignee, "cc": cc, "issue_type": issue_type}
+
+    # Build a rich description from available params
+    description_parts = []
+    if params.get("description"):
+        description_parts.append(params["description"])
+    if params.get("host"):
+        description_parts.append(f"Host: {params['host']}")
+    if params.get("devices"):
+        description_parts.append(f"Devices: {', '.join(params['devices'])}")
+    if params.get("slack_thread_url"):
+        description_parts.append(f"Slack thread: {params['slack_thread_url']}")
+    description = "\n".join(description_parts) if description_parts else title
+
+    # Resolve Slack user ID → JIRA accountId if provided
+    assignee_jira_id: str | None = None
+    raw_assignee = params.get("assignee", "")
+    if raw_assignee:
+        if raw_assignee.startswith("U") and slack_client:
+            # Looks like a Slack user ID — resolve it
+            assignee_jira_id = resolve_slack_user_to_jira(raw_assignee, slack_client)
+        else:
+            # Already a JIRA accountId
+            assignee_jira_id = raw_assignee
+    # Fall back to bot default assignee if not resolved
+    if not assignee_jira_id:
+        assignee_jira_id = settings.JIRA_ASSIGNEE_ID or None
+
+    result = create_issue(
+        title=title,
+        description=description,
+        assignee_jira_id=assignee_jira_id,
+        priority=params.get("priority", "Medium"),
+        labels=params.get("labels") or [],
+        custom_overrides=params.get("custom_fields") or {},
+    )
+    # Carry through extra display fields
+    result["cc"] = params.get("cc", []) or []
+    result["issue_type"] = params.get("issue_type", "Task")
+    return result
 
 
-def _exec_assign_ticket(params: dict) -> dict:
+def _exec_assign_ticket(params: dict, slack_client=None) -> dict:
+    """Assign a Jira ticket, resolving Slack user IDs when needed."""
     ticket_key = params.get("ticket_key", "")
-    assignee = params.get("assignee", "")
+    raw_assignee = params.get("assignee", "")
     cc: list[str] = params.get("cc", []) or []
-    if not ticket_key or not assignee:
+
+    if not ticket_key or not raw_assignee:
         return {"success": False, "error": "Need both ticket key and assignee"}
-    try:
-        resp = requests.put(
-            f"{JIRA_BASE}/issue/{ticket_key}/assignee",
-            json={"accountId": assignee},
-            headers=_jira_headers(), timeout=15,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"success": False, "error": type(exc).__name__}
-    if resp.status_code == 204:
-        return {"success": True, "ticket_key": ticket_key, "assignee": assignee, "cc": cc}
-    return {"success": False, "error": f"HTTP {resp.status_code}"}
+
+    # Resolve Slack → JIRA if it looks like a Slack user ID
+    assignee_jira_id = raw_assignee
+    if raw_assignee.startswith("U") and slack_client:
+        resolved = resolve_slack_user_to_jira(raw_assignee, slack_client)
+        if resolved:
+            assignee_jira_id = resolved
+
+    result = assign_issue(ticket_key, assignee_jira_id)
+    result["cc"] = cc
+    return result
 
 
 def _handle_infra_issue(
@@ -337,6 +346,44 @@ def _handle_infra_issue(
     return f"Analyzing {issue_category} — approval required"
 
 
+def _format_jira_created_blocks(result: dict) -> list[dict]:
+    """Block Kit blocks for a successfully created Jira ticket."""
+    key = result.get("ticket_key", "?")
+    url = result.get("url", f"{JIRA_BROWSE}/{key}")
+    title = result.get("title", key)
+    assignee = result.get("assignee", "")
+    cc: list[str] = result.get("cc", []) or []
+
+    assignee_line = f"<@{assignee}>" if assignee and assignee.startswith("U") else (assignee or "_unassigned_")
+    cc_line = " ".join(f"<@{u}>" for u in cc if u) if cc else ""
+
+    meta_parts = [f"Project TE  \u00b7  Platform Engineering"]
+    if cc_line:
+        meta_parts.append(f"CC: {cc_line}")
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":white_check_mark: *Ticket Created* \u2014 <{url}|{key}>\n{title}",
+            },
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Assignee*\n{assignee_line}"},
+                {"type": "mrkdwn", "text": f"*Priority*\n{result.get('priority', 'Medium')}"},
+            ],
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "  \u00b7  ".join(meta_parts)}],
+        },
+    ]
+    return blocks
+
+
 def register_message_listeners(app: App) -> None:
     @app.event("app_mention")
     def handle_mention(event: dict, say, client) -> None:  # noqa: ANN001
@@ -406,13 +453,30 @@ def register_message_listeners(app: App) -> None:
 
         bot_reply: str | None = None
 
-        if intent == "create_jira":
-            result = _exec_create_jira(params)
-            bot_reply = _jira_created_reply(result)
+        if intent == "device_check":
+            from bot.actions.device_check_action import DeviceCheckAction  # noqa: PLC0415
+            host = params.get("host", "")
+            udid = params.get("udid", "")
+            # If host not set but devices list has IPs vs serials, split them
+            if not host:
+                devices_list = params.get("devices", [])
+                host = next((d for d in devices_list if d.startswith("10.")), "")
+                udid = udid or next((d for d in devices_list if not d.startswith("10.")), "")
+            bot_reply = DeviceCheckAction().execute(host, udid)
             say(text=bot_reply, thread_ts=thread_ts)
 
+        elif intent == "create_jira":
+            result = _exec_create_jira(params, slack_client=client)
+            if result.get("success"):
+                blocks = _format_jira_created_blocks(result)
+                say(blocks=blocks, text=_jira_created_reply(result), thread_ts=thread_ts)
+                bot_reply = _jira_created_reply(result)
+            else:
+                bot_reply = _jira_created_reply(result)
+                say(text=bot_reply, thread_ts=thread_ts)
+
         elif intent == "assign_ticket":
-            result = _exec_assign_ticket(params)
+            result = _exec_assign_ticket(params, slack_client=client)
             bot_reply = _jira_assigned_reply(result)
             say(text=bot_reply, thread_ts=thread_ts)
 
@@ -466,12 +530,23 @@ def register_message_listeners(app: App) -> None:
             elif text:
                 client.chat_postMessage(**kw, text=text)
 
-        if intent == "create_jira":
-            result = _exec_create_jira(params)
-            client.chat_postMessage(channel=channel, thread_ts=thread_ts,
-                                    text=_jira_created_reply(result))
+        if intent == "device_check":
+            from bot.actions.device_check_action import DeviceCheckAction  # noqa: PLC0415
+            host = params.get("host", "")
+            udid = params.get("udid", "")
+            reply = DeviceCheckAction().execute(host, udid)
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
+        elif intent == "create_jira":
+            result = _exec_create_jira(params, slack_client=client)
+            if result.get("success"):
+                blocks = _format_jira_created_blocks(result)
+                client.chat_postMessage(channel=channel, thread_ts=thread_ts,
+                                        blocks=blocks, text=_jira_created_reply(result))
+            else:
+                client.chat_postMessage(channel=channel, thread_ts=thread_ts,
+                                        text=_jira_created_reply(result))
         elif intent == "assign_ticket":
-            result = _exec_assign_ticket(params)
+            result = _exec_assign_ticket(params, slack_client=client)
             client.chat_postMessage(channel=channel, thread_ts=thread_ts,
                                     text=_jira_assigned_reply(result))
         elif intent == "infra_issue":

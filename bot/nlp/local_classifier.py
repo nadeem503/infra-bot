@@ -25,8 +25,16 @@ logger = get_logger(__name__)
 # ── Regex patterns ────────────────────────────────────────────────────────────
 
 _IP_RE      = re.compile(r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
-_UDID_RE    = re.compile(r'\b([0-9a-fA-F]{40})\b')
+_UDID_RE    = re.compile(r'\b([0-9a-fA-F]{40})\b')                 # iOS UDID (40-char hex)
+_ANDROID_SERIAL_RE = re.compile(r'\b([A-Z][A-Z0-9]{7,19})\b')     # Android serial: uppercase, 8-20 chars
 _JIRA_KEY   = re.compile(r'\bTE-\d+\b', re.IGNORECASE)
+
+# Detects connectivity-check queries: "check connected", "is it online", etc.
+_DEVICE_CHECK_RE = re.compile(
+    r'\b(check|verify|ping|is|test)\b.{0,40}\b(connected|online|alive|reachable|up|running)\b'
+    r'|\b(connected|online|reachable)\b.{0,20}\b(on host|to host|on device)\b',
+    re.IGNORECASE,
+)
 
 _CREATE_JIRA_RE = re.compile(
     r'\b(create|open|add|file|raise|log)\b.{0,30}\b(jira|ticket|task|bug|story|issue)\b',
@@ -60,6 +68,10 @@ def _load_keywords() -> dict:
 def _extract_devices(text: str) -> list[str]:
     devices: list[str] = []
     devices.extend(_UDID_RE.findall(text))
+    # Android serials: uppercase alphanumeric, must contain at least one digit
+    for m in _ANDROID_SERIAL_RE.findall(text):
+        if any(c.isdigit() for c in m):  # filter out all-letter words like "MISMATCH"
+            devices.append(m)
     devices.extend(_IP_RE.findall(text))
     return list(dict.fromkeys(devices))  # deduplicate, preserve order
 
@@ -165,7 +177,31 @@ def classify_local(text: str, thread_history: list[dict] | None = None) -> Optio
             "_source": "local",
         }
 
-    # ── 3. Infra issue via keyword match ──────────────────────────────────────
+    # ── 3. Device connectivity check ("check if connected", "is it online") ─────
+    # This is a READ-ONLY check — runs adb devices on the host directly,
+    # no Gemini, no approval workflow.
+    if _DEVICE_CHECK_RE.search(clean):
+        devices = _extract_devices(clean)
+        # Split: IP addresses → host, everything else (UDID/serial) → device
+        host = next((d for d in devices if d.startswith("10.")), "")
+        udid = next((d for d in devices if not d.startswith("10.")), "")
+        region = _detect_region(devices, clean)
+        return {
+            "intent": "device_check",
+            "confidence": 0.90,
+            "params": {
+                "host": host,
+                "udid": udid,
+                "devices": devices,
+                "region": region,
+                "host_type": None,
+                "title": "", "issue_type": "Task", "assignee": "",
+                "cc": [], "ticket_key": "",
+            },
+            "_source": "local",
+        }
+
+    # ── 4. Infra issue via keyword match ──────────────────────────────────────
     match = _match_issue_category(clean)
     if not match:
         # No keyword match and no thread context → let Gemini handle

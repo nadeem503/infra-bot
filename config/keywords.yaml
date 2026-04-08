@@ -22,6 +22,12 @@ device_down:
     - "not available"
     - "down"
     - "dead"
+    - "check connected"
+    - "is connected"
+    - "connected on host"
+    - "check device"
+    - "not connected"
+    - "check it"
   severity: high
   auto_action: device_status
 
