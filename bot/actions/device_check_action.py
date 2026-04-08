@@ -17,7 +17,16 @@ logger = get_logger(__name__)
 class DeviceCheckAction:
     """Runs ADB connectivity check on a DC host and returns a Slack-ready reply."""
 
-    def execute(self, host: str, udid: str = "") -> str:
+    def execute(self, host: str, udid: str = "", hosts: list | None = None, udids: list | None = None) -> str:
+        """Check device connectivity.
+
+        When a mapping list is passed (hosts + udids), checks each pair.
+        Falls back to single host+udid mode for direct queries.
+        """
+        # Multi-pair mode: check each host,udid pair from a mapping list
+        if hosts and len(hosts) > 1:
+            return self._execute_multi(hosts, udids or [])
+
         if not host:
             return ":warning: No host IP found in your message. Try: `@infra-bot 10.151.2.22,S499NNSGU8GUW8O7 check if connected`"
 
@@ -78,3 +87,44 @@ class DeviceCheckAction:
 
         logger.info("device_check host=%s udid=%s success=%s", host, udid, result["success"])
         return reply
+
+    def _execute_multi(self, hosts: list, udids: list) -> str:
+        """Check connectivity for multiple host,udid pairs (from a mapping list)."""
+        # Fetch adb devices once per unique host
+        host_results: dict[str, dict] = {}
+        for h in dict.fromkeys(hosts):  # unique, preserve order
+            host_results[h] = ssh_exec(h, "adb devices")
+
+        lines = [":mag: *Device connectivity check*\n"]
+        pairs = list(zip(hosts, udids)) if udids else [(h, "") for h in hosts]
+
+        ok = fail = 0
+        for host_ip, serial in pairs[:20]:  # cap at 20 pairs
+            res = host_results.get(host_ip, {})
+            if not res.get("success") and res.get("exit_code") == -1:
+                lines.append(f":x: `{host_ip}` — SSH failed: {res.get('error', '')[:60]}")
+                fail += 1
+                continue
+
+            adb_out = res.get("output", "")
+            if serial:
+                device_line = next((l for l in adb_out.splitlines() if serial in l), None)
+                if device_line:
+                    parts = device_line.strip().split("\t")
+                    status = parts[1].strip() if len(parts) > 1 else "found"
+                    icon = ":white_check_mark:" if status == "device" else ":warning:"
+                    state = {"device": "authorized", "unauthorized": "UNAUTHORIZED",
+                             "offline": "OFFLINE"}.get(status, status)
+                    lines.append(f"{icon} `{host_ip}` / `{serial}` — {state}")
+                    ok += 1
+                else:
+                    lines.append(f":x: `{host_ip}` / `{serial}` — not found in adb devices")
+                    fail += 1
+            else:
+                device_count = sum(1 for l in adb_out.splitlines() if "\t" in l)
+                lines.append(f":white_check_mark: `{host_ip}` — {device_count} device(s) attached")
+                ok += 1
+
+        lines.append(f"\n*Summary:* {ok} OK, {fail} failed out of {len(pairs[:20])} pairs")
+        logger.info("device_check multi: %d pairs, %d ok, %d fail", len(pairs), ok, fail)
+        return "\n".join(lines)

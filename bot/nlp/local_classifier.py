@@ -32,8 +32,15 @@ _JIRA_KEY   = re.compile(r'\bTE-\d+\b', re.IGNORECASE)
 # Detects connectivity-check queries: "check connected", "is it online", etc.
 _DEVICE_CHECK_RE = re.compile(
     r'\b(check|verify|ping|is|test)\b.{0,40}\b(connected|online|alive|reachable|up|running)\b'
-    r'|\b(connected|online|reachable)\b.{0,20}\b(on host|to host|on device)\b',
+    r'|\b(connected|online|reachable)\b.{0,20}\b(on host|to host|on device)\b'
+    r'|\b(check|verify)\b.{0,20}\b(connected|connection|connectivity|status|if connected)\b',
     re.IGNORECASE,
+)
+
+# Matches lines in the format "10.x.x.x,SERIAL" — device mapping list
+_DEVICE_MAPPING_LINE_RE = re.compile(
+    r'^\s*10\.\d{1,3}\.\d{1,3}\.\d{1,3}\s*,\s*[A-Z][A-Z0-9]{6,}\s*$',
+    re.MULTILINE,
 )
 
 _CREATE_JIRA_RE = re.compile(
@@ -77,10 +84,14 @@ def _extract_devices(text: str) -> list[str]:
 
 
 def _detect_region(devices: list[str], text: str) -> Optional[str]:
+    region_counts: dict[str, int] = {}
     for device in devices:
         for prefix, region in _IP_REGIONS.items():
             if device.startswith(prefix):
-                return region
+                region_counts[region] = region_counts.get(region, 0) + 1
+    if region_counts:
+        # Return most common region; if tied, prefer "ap" then "us" then "dublin"
+        return max(region_counts, key=lambda r: (region_counts[r], r == "ap", r == "us"))
     # Fallback: text keywords
     t = text.lower()
     if any(k in t for k in ("mumbai", "mum", "mum-dc", " ap ", "apac", "singapore")):
@@ -177,7 +188,33 @@ def classify_local(text: str, thread_history: list[dict] | None = None) -> Optio
             "_source": "local",
         }
 
-    # ── 3. Device connectivity check ("check if connected", "is it online") ─────
+    # ── 3. Device mapping list ("10.x.x.x,SERIAL" per line) → device_check ──────
+    # When the message is a host,device mapping list, always treat it as a
+    # connectivity check — never as device_down (which requires approval).
+    mapping_lines = _DEVICE_MAPPING_LINE_RE.findall(clean)
+    if len(mapping_lines) >= 2:
+        devices = _extract_devices(clean)
+        hosts   = [d for d in devices if d.startswith("10.")]
+        udids   = [d for d in devices if not d.startswith("10.")]
+        region  = _detect_region(hosts, clean)
+        return {
+            "intent": "device_check",
+            "confidence": 0.88,
+            "params": {
+                "host":  hosts[0] if hosts else "",
+                "udid":  udids[0] if udids else "",
+                "hosts": hosts,
+                "udids": udids,
+                "devices": devices,
+                "region": region,
+                "host_type": None,
+                "title": "", "issue_type": "Task", "assignee": "",
+                "cc": [], "ticket_key": "",
+            },
+            "_source": "local",
+        }
+
+    # ── 4. Device connectivity check ("check if connected", "is it online") ─────
     # This is a READ-ONLY check — runs adb devices on the host directly,
     # no Gemini, no approval workflow.
     if _DEVICE_CHECK_RE.search(clean):
@@ -201,7 +238,7 @@ def classify_local(text: str, thread_history: list[dict] | None = None) -> Optio
             "_source": "local",
         }
 
-    # ── 4. Infra issue via keyword match ──────────────────────────────────────
+    # ── 5. Infra issue via keyword match ──────────────────────────────────────
     match = _match_issue_category(clean)
     if not match:
         # No keyword match and no thread context → let Gemini handle

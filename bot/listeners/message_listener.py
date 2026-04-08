@@ -484,12 +484,14 @@ def register_message_listeners(app: App) -> None:
             from bot.actions.device_check_action import DeviceCheckAction  # noqa: PLC0415
             host = params.get("host", "")
             udid = params.get("udid", "")
+            hosts = params.get("hosts") or []
+            udids = params.get("udids") or []
             # If host not set but devices list has IPs vs serials, split them
             if not host:
                 devices_list = params.get("devices", [])
                 host = next((d for d in devices_list if d.startswith("10.")), "")
                 udid = udid or next((d for d in devices_list if not d.startswith("10.")), "")
-            bot_reply = DeviceCheckAction().execute(host, udid)
+            bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids)
             say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "create_jira":
