@@ -1,15 +1,28 @@
 """Action listener: handles Approve / Deny / Execute-Now button clicks.
 
 Only APPROVER_SLACK_ID may approve actions.
-For multi-device actions, posts a live progress bar in the thread.
+Multi-device actions: live progress bar updated in-thread.
+After completion:
+  - Updates original approval card to show final status (audit trail)
+  - Records outcome in learning store
+  - Updates device personality tracker
+  - Updates circuit breaker (failure/success counter)
+  - Increments daily stats
+Also handles: replay_action (from /infra history)
 """
+from __future__ import annotations
+
+import json
 import threading
+import time
 
 from slack_bolt import App
 
 from bot.actions.base_action import BaseAction
 from bot.approval.approval_manager import approval_manager
 from bot.formatters.slack_formatter import SlackFormatter
+from bot.memory import circuit_breaker, device_tracker, learning_store
+from bot.memory.redis_client import get_redis
 from config import settings
 from utils.logger import get_logger
 
@@ -21,12 +34,12 @@ def _get_action_handler(action_type: str) -> type[BaseAction] | None:
     from bot.actions.adb_action import ADBAction  # noqa: PLC0415
     from bot.actions.db_action import DBAction  # noqa: PLC0415
     from bot.actions.device_status import DeviceStatusAction  # noqa: PLC0415
+    from bot.actions.device_disconnected_action import DeviceDisconnectedAction  # noqa: PLC0415
     from bot.actions.github_action import GitHubAction  # noqa: PLC0415
     from bot.actions.jenkins_action import JenkinsAction  # noqa: PLC0415
     from bot.actions.jira_action import JiraAction  # noqa: PLC0415
     from bot.actions.ssh_action import SSHAction  # noqa: PLC0415
-
-    mapping: dict[str, type[BaseAction]] = {
+    return {
         "ssh_reboot": SSHAction,
         "device_status": DeviceStatusAction,
         "adb_restart": ADBAction,
@@ -36,12 +49,84 @@ def _get_action_handler(action_type: str) -> type[BaseAction] | None:
         "jenkins_trigger": JenkinsAction,
         "github_workflow": GitHubAction,
         "jira_ticket": JiraAction,
-    }
-    return mapping.get(action_type)
+        "device_disconnected": DeviceDisconnectedAction,
+    }.get(action_type)
+
+
+def _record_completion(record, result: dict, host: str | None = None) -> None:
+    """Post-action bookkeeping: learning, device tracker, circuit breaker, daily stats."""
+    success = result.get("success", False)
+
+    # Learning store — record outcome for this (issue_type→action_type, region) pair
+    from bot.analyzers.issue_detector import IssueDetector  # noqa: PLC0415
+    det = IssueDetector()
+    issue_type = det.get_issue_from_action(record.action_type) or record.action_type
+    learning_store.record_outcome(issue_type, record.region, record.action_type, success)
+
+    # Device tracker
+    for d in record.devices:
+        device_tracker.record_action(d, record.action_type)
+
+    # Circuit breaker
+    if host:
+        if success:
+            circuit_breaker.record_success(host)
+        else:
+            circuit_breaker.record_failure(host)
+
+    # Daily stats
+    r = get_redis()
+    date_str = time.strftime("%Y-%m-%d")
+    status_field = "success" if success else "failed"
+    r.hincrby(f"infra:stats:daily:{date_str}", status_field, 1)
+    r.expire(f"infra:stats:daily:{date_str}", 8 * 86400)
+    r.hincrby(f"infra:stats:daily:{date_str}:issues", record.action_type, 1)
+    r.expire(f"infra:stats:daily:{date_str}:issues", 8 * 86400)
+
+
+def _update_approval_card(record, result: dict, client, channel: str) -> None:
+    """Edit the original approval card to show completed status (audit trail)."""
+    if not record.approval_msg_ts:
+        return
+    success = result.get("success", False)
+    icon = ":white_check_mark:" if success else ":x:"
+    msg = result.get("message", "")[:120]
+    try:
+        client.chat_update(
+            channel=channel,
+            ts=record.approval_msg_ts,
+            text=f"{icon} `{record.action_type}` completed",
+            blocks=[{
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"~Action pending~ → {icon} `{record.action_type}` "
+                        f"completed\n_{msg}_"
+                    ),
+                },
+            }],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not update approval card: %s", exc)
 
 
 def _run_single(record, user_id: str, client, channel: str, thread_ts: str) -> None:
-    """Execute a single-device action."""
+    host = record.params.get("host") or (record.devices[0] if record.devices else None)
+
+    # Circuit breaker check
+    if host and circuit_breaker.is_tripped(host):
+        ttl = circuit_breaker.trip_ttl(host)
+        client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts,
+            text=(
+                f":zap: *Circuit breaker tripped* for `{host}` — 3 consecutive failures. "
+                f"Actions paused for ~{max(1, ttl // 60)}m. Manual investigation recommended."
+            ),
+        )
+        approval_manager.complete(record.action_id, {"success": False, "message": "Circuit breaker active"})
+        return
+
     ActionClass = _get_action_handler(record.action_type)
     if not ActionClass:
         client.chat_postMessage(
@@ -50,10 +135,7 @@ def _run_single(record, user_id: str, client, channel: str, thread_ts: str) -> N
         )
         return
 
-    action = ActionClass(
-        params=record.params, triggered_by=user_id,
-        channel=channel, region=record.region,
-    )
+    action = ActionClass(params=record.params, triggered_by=user_id, channel=channel, region=record.region)
     try:
         result = action.run()
     except PermissionError as exc:
@@ -63,6 +145,9 @@ def _run_single(record, user_id: str, client, channel: str, thread_ts: str) -> N
         result = {"success": False, "message": f"Execution error: {type(exc).__name__}", "details": {}}
 
     approval_manager.complete(record.action_id, result)
+    _record_completion(record, result, host)
+    _update_approval_card(record, result, client, channel)
+
     client.chat_postMessage(
         channel=channel, thread_ts=thread_ts,
         text=_formatter.format_result(record.action_type, result),
@@ -71,7 +156,6 @@ def _run_single(record, user_id: str, client, channel: str, thread_ts: str) -> N
 
 
 def _run_bulk(record, user_id: str, client, channel: str, thread_ts: str) -> None:
-    """Execute multi-device action with a live progress bar."""
     ActionClass = _get_action_handler(record.action_type)
     if not ActionClass:
         client.chat_postMessage(
@@ -88,7 +172,6 @@ def _run_bulk(record, user_id: str, client, channel: str, thread_ts: str) -> Non
         for i, d in enumerate(devices)
     ]
 
-    # Post initial progress message and keep its ts for updates
     init_resp = client.chat_postMessage(
         channel=channel, thread_ts=thread_ts,
         text=f"{header}\n" + "\n".join(progress_lines),
@@ -97,52 +180,52 @@ def _run_bulk(record, user_id: str, client, channel: str, thread_ts: str) -> Non
 
     results = []
     for i, device in enumerate(devices):
+        host = device
+        if host and circuit_breaker.is_tripped(host):
+            results.append({"success": False})
+            ttl = circuit_breaker.trip_ttl(host)
+            progress_lines[i] = f":zap: `[{i+1}/{n}]` `{device}` \u2192 circuit breaker tripped (~{max(1, ttl // 60)}m)"
+            client.chat_update(channel=channel, ts=progress_ts, text=f"{header}\n" + "\n".join(progress_lines))
+            continue
+
         progress_lines[i] = f":hourglass: `[{i+1}/{n}]` `{device}` \u2192 in progress..."
-        client.chat_update(
-            channel=channel, ts=progress_ts,
-            text=f"{header}\n" + "\n".join(progress_lines),
-        )
+        client.chat_update(channel=channel, ts=progress_ts, text=f"{header}\n" + "\n".join(progress_lines))
 
         device_params = {**record.params, "udid": device, "host": device, "devices": [device]}
-        action = ActionClass(
-            params=device_params, triggered_by=user_id,
-            channel=channel, region=record.region,
-        )
+        action = ActionClass(params=device_params, triggered_by=user_id, channel=channel, region=record.region)
         try:
             result = action.run()
             results.append(result)
             ok = ":white_check_mark:" if result.get("success") else ":x:"
             snippet = result.get("message", "done")[:60]
             progress_lines[i] = f"{ok} `[{i+1}/{n}]` `{device}` \u2192 {snippet}"
+            if result.get("success"):
+                circuit_breaker.record_success(host)
+            else:
+                circuit_breaker.record_failure(host)
         except Exception as exc:  # noqa: BLE001
             results.append({"success": False})
             progress_lines[i] = f":x: `[{i+1}/{n}]` `{device}` \u2192 {type(exc).__name__}"
+            circuit_breaker.record_failure(host)
 
-        client.chat_update(
-            channel=channel, ts=progress_ts,
-            text=f"{header}\n" + "\n".join(progress_lines),
-        )
+        client.chat_update(channel=channel, ts=progress_ts, text=f"{header}\n" + "\n".join(progress_lines))
 
     success_count = sum(1 for r in results if r.get("success"))
-    final = (
-        f":white_check_mark: *Bulk complete: {success_count}/{n} succeeded*\n\n"
-        + "\n".join(progress_lines)
-    )
+    final_result = {"success": success_count == n, "message": f"{success_count}/{n} devices succeeded"}
+    final = f":white_check_mark: *Bulk complete: {success_count}/{n} succeeded*\n\n" + "\n".join(progress_lines)
     client.chat_update(channel=channel, ts=progress_ts, text=final)
-    approval_manager.complete(
-        record.action_id,
-        {"success": success_count == n, "message": f"{success_count}/{n} devices succeeded"},
-    )
+    approval_manager.complete(record.action_id, final_result)
+    _record_completion(record, final_result)
+    _update_approval_card(record, final_result, client, channel)
 
 
 def _execute_approved(record, user_id: str, client, channel: str, thread_ts: str) -> None:
-    """Shared logic for approve_action and execute_now_action."""
+    """Shared execution logic for approve / execute-now / reaction approval."""
     client.chat_postMessage(
         channel=channel, thread_ts=thread_ts,
         text=f":hourglass: Executing `{record.action_type}` (approved by <@{user_id}>)...",
     )
     if len(record.devices) > 1:
-        # Run bulk in a background thread so Slack's 3s ack window isn't exceeded
         threading.Thread(
             target=_run_bulk,
             args=(record, user_id, client, channel, thread_ts),
@@ -168,7 +251,6 @@ def register_action_listeners(app: App) -> None:
                 channel=channel, thread_ts=thread_ts,
                 text=_formatter.format_unauthorized(user_id),
             )
-            logger.warning("Unauthorized %s attempt by %s", label, user_id)
             return
 
         record = approval_manager.approve(action_id, user_id)
@@ -205,8 +287,6 @@ def register_action_listeners(app: App) -> None:
         message_ts: str = body["message"]["ts"]
         thread_ts: str = body["message"].get("thread_ts", message_ts)
 
-        logger.info("Deny: action_id=%s user=%s", action_id, user_id)
-
         record = approval_manager.deny(action_id, user_id)
         if not record:
             client.chat_postMessage(
@@ -219,3 +299,71 @@ def register_action_listeners(app: App) -> None:
             channel=channel, thread_ts=thread_ts,
             text=_formatter.format_denied(record.action_type, user_id),
         )
+
+    @app.action("replay_action")
+    def handle_replay(ack, body, client) -> None:  # noqa: ANN001
+        ack()
+        user_id: str = body["user"]["id"]
+        channel: str = body["channel"]["id"]
+        message_ts: str = body["message"]["ts"]
+        thread_ts: str = body["message"].get("thread_ts", message_ts)
+
+        replay_key: str = body["actions"][0]["value"]
+        raw = get_redis().get(replay_key)
+        if not raw:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=":warning: Replay data expired — please run `/infra history` again.",
+            )
+            return
+
+        data = json.loads(raw)
+        action_type = data.get("action_type", "device_status")
+        params = data.get("params", {})
+        region = data.get("region", "unknown")
+        devices = data.get("devices", [])
+
+        from bot.formatters.slack_formatter import SlackFormatter  # noqa: PLC0415
+        fmt = SlackFormatter()
+
+        dry_run_preview: str | None = None
+        ActionClass = _get_action_handler(action_type)
+        if ActionClass:
+            try:
+                dry_run_preview = ActionClass(
+                    params=params, triggered_by=user_id, channel=channel, region=region
+                ).dry_run()
+            except Exception:  # noqa: BLE001
+                pass
+
+        action_id = approval_manager.create_action(
+            action_type=action_type,
+            params=params,
+            channel=channel,
+            thread_ts=thread_ts,
+            requested_by=user_id,
+            region=region,
+            devices=devices,
+            dry_run_preview=dry_run_preview,
+        )
+
+        blocks = fmt.format_analysis(
+            issue_type=action_type,
+            region=region,
+            region_display=region,
+            devices=devices,
+            proposed_actions=[f"`{action_type}` (replayed)"],
+            action_records=[{"action_id": action_id, "action_type": action_type, "dry_run_preview": dry_run_preview}],
+            personality_warnings=[],
+            recommendation=None,
+        )
+
+        resp = client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts,
+            blocks=blocks,
+            text=f":repeat: Replaying `{action_type}`",
+        )
+        if resp and resp.get("ts"):
+            approval_manager.set_msg_ts(action_id, resp["ts"], channel)
+
+        logger.info("Replay action created: %s (%s) by %s", action_id, action_type, user_id)

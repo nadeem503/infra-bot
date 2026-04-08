@@ -5,6 +5,8 @@ Auto-detects mention format:
   U... -> <@USERID>   (user mention)
   C... -> <#CHANNELID> (channel mention)
 """
+from __future__ import annotations
+
 import time
 from typing import Optional
 
@@ -15,10 +17,9 @@ logger = get_logger(__name__)
 
 
 def _make_mention(slack_id: str) -> str:
-    """Return the correct Slack mention syntax for a given ID."""
     if slack_id.startswith("C"):
-        return f"<#{slack_id}>"   # channel mention
-    return f"<@{slack_id}>"       # user mention
+        return f"<#{slack_id}>"
+    return f"<@{slack_id}>"
 
 
 class SlackFormatter:
@@ -35,7 +36,6 @@ class SlackFormatter:
         return self.owners.get(region or "") or self.owners.get("default", {})
 
     def get_owner_mentions(self, region: Optional[str]) -> tuple[str, str]:
-        """Return (mention_string, team_name) for a region."""
         owner = self.get_owner(region)
         name = owner.get("name", "Unknown")
         ids: list[str] = owner.get("slack_ids") or []
@@ -52,6 +52,8 @@ class SlackFormatter:
         devices: list[str],
         proposed_actions: list[str],
         action_records: list[dict],
+        personality_warnings: list[str] | None = None,
+        recommendation: dict | None = None,
     ) -> list[dict]:
         """Build Block Kit blocks for the main analysis response."""
         owner_mention, owner_name = self.get_owner_mentions(region)
@@ -62,24 +64,40 @@ class SlackFormatter:
             else "\u2022 Device status check"
         )
 
+        # Build main section text
+        main_text = (
+            ":rotating_light: *Infra AI Response*\n"
+            f"\u2022 *Issue Detected:* `{issue_type or 'general'}`\n"
+            f"\u2022 *Region:* {region_display}\n"
+            f"\u2022 *Devices:* {device_list}\n"
+            f"\u2022 *DC Owners:* {owner_mention} ({owner_name})\n"
+            f"\u2022 *Action Plan:*\n{actions_text}\n"
+            "\u2022 *Executing:* Awaiting approval :hourglass_flowing_sand:"
+        )
+
         blocks: list[dict] = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        ":rotating_light: *Infra AI Response*\n"
-                        f"\u2022 *Issue Detected:* `{issue_type or 'general'}`\n"
-                        f"\u2022 *Region:* {region_display}\n"
-                        f"\u2022 *Devices:* {device_list}\n"
-                        f"\u2022 *DC Owners:* {owner_mention} ({owner_name})\n"
-                        f"\u2022 *Action Plan:*\n{actions_text}\n"
-                        "\u2022 *Executing:* Awaiting approval :hourglass_flowing_sand:"
-                    ),
-                },
-            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": main_text}},
             {"type": "divider"},
         ]
+
+        # Learning recommendation
+        if recommendation:
+            pct = int(recommendation["success_rate"] * 100)
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        f":brain: *Learned:* `{recommendation['action_type']}` fixed this "
+                        f"{pct}% of the time ({recommendation['success']}/"
+                        f"{recommendation['total']} runs in `{region or 'unknown'}`)"
+                    ),
+                }],
+            })
+
+        # Device personality warnings
+        for w in (personality_warnings or []):
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": w}})
 
         for record in action_records:
             blocks.extend(self._approval_buttons(record))
@@ -91,19 +109,13 @@ class SlackFormatter:
         dry_run_preview = record.get("dry_run_preview")
 
         blocks: list[dict] = [
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f":wrench: *Proposed Action:* `{action_type}`"},
-            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": f":wrench: *Proposed Action:* `{action_type}`"}},
         ]
 
         if dry_run_preview:
             blocks.append({
                 "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f":mag: *Dry Run Preview:*\n```{dry_run_preview}```",
-                },
+                "text": {"type": "mrkdwn", "text": f":mag: *Dry Run Preview:*\n```{dry_run_preview}```"},
             })
 
         blocks.append({
@@ -134,11 +146,31 @@ class SlackFormatter:
         })
         return blocks
 
+    def format_clarification_card(self, clarify_id: str, options: list[dict]) -> list[dict]:
+        """Block Kit card with A/B/C buttons for low-confidence messages."""
+        elements = []
+        labels = ["A", "B", "C"]
+        for i, opt in enumerate(options[:3]):
+            elements.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": f"{labels[i]}) {opt.get('label', f'Option {labels[i]}')[:40]}"},
+                "action_id": "clarify_choice",
+                "value": f"{clarify_id}:{i}",
+            })
+        return [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": ":thinking_face: *Not sure what you mean — did you want me to:*",
+                },
+            },
+            {"type": "actions", "elements": elements},
+        ]
+
     def format_pending_list(self, records: list) -> str:
-        """Format list of pending actions for /infra pending."""
         if not records:
             return ":white_check_mark: No pending actions right now."
-
         lines = [f":hourglass: *{len(records)} pending action(s):*\n"]
         for rec in records:
             age_min = max(0, int((time.time() - rec.requested_at) / 60))

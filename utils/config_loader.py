@@ -28,3 +28,11 @@ def get_keywords() -> dict:
 
 def get_regions() -> dict:
     return load_config("regions.yaml")
+
+
+def get_devices() -> dict:
+    try:
+        data = load_config("devices.yaml")
+        return data.get("devices", {}) if data else {}
+    except FileNotFoundError:
+        return {}

@@ -20,6 +20,10 @@ class Settings:
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+    # Escalation chain
+    ESCALATION_APPROVER_ID: str = os.getenv("ESCALATION_APPROVER_ID", "")   # backup approver
+    ESCALATION_WAIT_MINUTES: int = int(os.getenv("ESCALATION_WAIT_MINUTES", "15"))
+
     # SSH / Bastion
     BASTION_HOST: str = os.getenv("BASTION_HOST", "")
     BASTION_USER: str = os.getenv("BASTION_USER", "")
@@ -45,6 +49,10 @@ class Settings:
     JIRA_API_TOKEN: str = os.getenv("JIRA_API_TOKEN", "")
     JIRA_CLOUD_ID: str = os.getenv("JIRA_CLOUD_ID", "3def4f78-101d-4614-9b65-735c17a98a93")
     JIRA_ASSIGNEE_ID: str = os.getenv("JIRA_ASSIGNEE_ID", "642196d2b05b4e3e7dab5355")
+
+    # Token expiry dates (YYYY-MM-DD) — checked in Home Tab dashboard
+    JIRA_TOKEN_EXPIRES: str = os.getenv("JIRA_TOKEN_EXPIRES", "")
+    JENKINS_TOKEN_EXPIRES: str = os.getenv("JENKINS_TOKEN_EXPIRES", "")
 
 
 settings = Settings()

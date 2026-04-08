@@ -1,32 +1,37 @@
 """Slash command handler for /infra.
 
 Supported subcommands:
-  /infra status <ip_or_udid>          -- fetch live device health
-  /infra pending                       -- list all pending approval actions
-  /infra history device=<id> last=24h -- recent audit log entries for a device
-  /infra faulty count                  -- count offline/faulty devices from DB (read-only)
+  /infra status <ip_or_udid>            -- fetch live device health
+  /infra pending                         -- list all pending approval actions
+  /infra history device=<id> last=24h   -- recent audit log entries (with Replay button)
+  /infra faulty count                    -- count offline/faulty devices from DB (read-only)
 
 Note: Register the /infra slash command in your Slack App settings
 (Features > Slash Commands) pointing to your Socket Mode app.
 """
+from __future__ import annotations
+
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 
 from slack_bolt import App
 
 from bot.approval.approval_manager import approval_manager
 from bot.formatters.slack_formatter import SlackFormatter
+from bot.memory.redis_client import get_redis
 from config import settings
+from utils.device_name import get_device_name
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 _formatter = SlackFormatter()
 
 LOGS_PATH = Path("logs/actions.jsonl")
+REPLAY_TTL = 3600   # 1 hour
 
-# Customize this query for your actual devices table schema
 FAULTY_QUERY = (
     "SELECT COUNT(*) AS faulty_count FROM devices "
     "WHERE status IN ('offline', 'faulty', 'error', 'down')"
@@ -42,21 +47,20 @@ def _handle_status(target: str, respond) -> None:  # noqa: ANN001
     if not target:
         respond(":warning: Usage: `/infra status <ip_or_udid>`")
         return
-    respond(f":hourglass: Fetching status for `{target}`...")
+    label = get_device_name(target)
+    respond(f":hourglass: Fetching status for `{label}`...")
     try:
         from bot.actions.device_status import DeviceStatusAction  # noqa: PLC0415
         action = DeviceStatusAction(
             params={"host": target, "udid": target, "devices": [target]},
-            triggered_by="slash_cmd",
-            channel="slash",
-            region="unknown",
+            triggered_by="slash_cmd", channel="slash", region="unknown",
         )
         result = action.run()
         icon = ":white_check_mark:" if result.get("success") else ":x:"
         msg = result.get("message", "No response")
         output = result.get("details", {}).get("output", "")
         output_str = f"\n```{output[:600]}```" if output else ""
-        respond(f"{icon} *Device:* `{target}`\n{msg}{output_str}")
+        respond(f"{icon} *Device:* `{label}`\n{msg}{output_str}")
     except Exception as exc:  # noqa: BLE001
         respond(f":warning: Failed to fetch status: `{type(exc).__name__}: {exc}`")
 
@@ -67,7 +71,7 @@ def _handle_pending(respond) -> None:  # noqa: ANN001
     respond(_formatter.format_pending_list(records))
 
 
-def _handle_history(args: list[str], respond) -> None:  # noqa: ANN001
+def _handle_history(args: list[str], channel: str, respond) -> None:  # noqa: ANN001
     device_id = ""
     hours = 24
     for arg in args:
@@ -90,41 +94,79 @@ def _handle_history(args: list[str], respond) -> None:  # noqa: ANN001
             for line in f:
                 try:
                     entry = json.loads(line)
-                    if device_id in (entry.get("devices") or []) and entry.get("timestamp", 0) >= cutoff:
+                    devs = entry.get("devices") or []
+                    if device_id in devs and entry.get("timestamp", 0) >= cutoff:
                         entries.append(entry)
                 except json.JSONDecodeError:
                     continue
 
+    label = get_device_name(device_id)
     if not entries:
-        respond(f":mag: No history found for `{device_id}` in the last {hours}h")
+        respond(f":mag: No history found for `{label}` in the last {hours}h")
         return
 
-    lines = [f":scroll: *History for `{device_id}` (last {hours}h) \u2014 {len(entries)} entries:*\n"]
-    for e in entries[-20:]:   # cap at 20 to avoid Slack message size limit
+    # Build blocks with Replay buttons
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":scroll: *History for `{label}` (last {hours}h) — {len(entries)} entries:*",
+            },
+        },
+        {"type": "divider"},
+    ]
+
+    for e in entries[-15:]:   # cap at 15 to stay under Slack block limit
         ts_str = time.strftime("%m/%d %H:%M", time.localtime(e.get("timestamp", 0)))
         ok = ":white_check_mark:" if e.get("status") == "completed" else ":x:"
-        lines.append(
-            f"{ok} `{ts_str}` \u2014 `{e.get('action_type')}` | "
-            f"{e.get('region', '?')} | {e.get('status')} | by <@{e.get('triggered_by', '?')}>"
+        action_type = e.get("action_type", "unknown")
+        region = e.get("region", "?")
+        triggered_by = e.get("triggered_by", "?")
+
+        # Store replay data in Redis
+        replay_key = f"infra:replay:{uuid.uuid4().hex[:8]}"
+        get_redis().setex(
+            replay_key,
+            REPLAY_TTL,
+            json.dumps({
+                "action_type": action_type,
+                "params": e.get("params", {}),
+                "region": region,
+                "devices": e.get("devices", []),
+            }),
         )
-    respond("\n".join(lines))
+
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"{ok} `{ts_str}` — `{action_type}` | "
+                    f"{region} | {e.get('status')} | by <@{triggered_by}>"
+                ),
+            },
+            "accessory": {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "\U0001f501 Replay"},
+                "action_id": "replay_action",
+                "value": replay_key,
+            },
+        })
+
+    respond(blocks=blocks, text=f"History for {label}")
 
 
 def _handle_faulty_count(respond) -> None:  # noqa: ANN001
     if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD, settings.DB_NAME]):
         respond(":warning: Database not configured — set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env")
         return
-
     respond(":hourglass: Querying DB for faulty device count...")
     try:
         import pymysql  # noqa: PLC0415
         conn = pymysql.connect(
-            host=settings.DB_HOST,
-            user=settings.DB_USER,
-            password=settings.DB_PASSWORD,
-            database=settings.DB_NAME,
-            port=settings.DB_PORT,
-            connect_timeout=10,
+            host=settings.DB_HOST, user=settings.DB_USER, password=settings.DB_PASSWORD,
+            database=settings.DB_NAME, port=settings.DB_PORT, connect_timeout=10,
         )
         with conn:
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -145,6 +187,7 @@ def register_slash_listeners(app: App) -> None:
         ack()
         text = body.get("text", "").strip()
         user_id = body.get("user_id", "")
+        channel = body.get("channel_id", "")
         logger.info("/infra command from %s: %s", user_id, text)
 
         subcommand, args = _parse(text)
@@ -154,7 +197,7 @@ def register_slash_listeners(app: App) -> None:
         elif subcommand == "pending":
             _handle_pending(respond)
         elif subcommand == "history":
-            _handle_history(args, respond)
+            _handle_history(args, channel, respond)
         elif subcommand == "faulty" and args and args[0] == "count":
             _handle_faulty_count(respond)
         else:
@@ -162,6 +205,6 @@ def register_slash_listeners(app: App) -> None:
                 ":robot_face: *Infra-Bot slash commands:*\n"
                 "\u2022 `/infra status <ip_or_udid>` \u2014 live device health\n"
                 "\u2022 `/infra pending` \u2014 list pending approvals\n"
-                "\u2022 `/infra history device=<id> last=24h` \u2014 action history\n"
+                "\u2022 `/infra history device=<id> last=24h` \u2014 action history with Replay\n"
                 "\u2022 `/infra faulty count` \u2014 count offline/faulty devices from DB"
             )

@@ -49,3 +49,10 @@ class IssueDetector:
 
     def get_auto_action(self, category: str) -> str:
         return self.keywords.get(category, {}).get("auto_action", "device_status")
+
+    def get_issue_from_action(self, action_type: str) -> Optional[str]:
+        """Reverse lookup: given action_type, return the issue category that maps to it."""
+        for category, config in self.keywords.items():
+            if config.get("auto_action") == action_type:
+                return category
+        return None

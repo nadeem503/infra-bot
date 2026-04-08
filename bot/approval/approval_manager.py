@@ -1,15 +1,17 @@
 """Approval manager: persistent action store backed by Redis.
 
 Keys:
-  infra:approval:{action_id}  -> JSON-serialised ActionRecord (TTL: 30 min)
-  infra:approvals:index       -> Redis set of known action IDs (for /infra pending)
+  infra:approval:{action_id}        -> JSON-serialised ActionRecord (TTL: 30 min)
+  infra:approvals:index             -> Redis set of known action IDs
+  infra:approval:msgts:{ch}:{ts}    -> action_id (for reaction-based approval)
 """
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from bot.memory.redis_client import get_redis
@@ -36,6 +38,7 @@ class ActionRecord:
     devices: list = field(default_factory=list)
     result: Optional[dict] = None
     dry_run_preview: Optional[str] = None
+    approval_msg_ts: Optional[str] = None   # ts of the Block Kit card (for editing)
 
 
 def _serialize(record: ActionRecord) -> str:
@@ -77,6 +80,19 @@ class ApprovalManager:
         logger.info("Action created in Redis: %s (%s)", action_id, action_type)
         return action_id
 
+    def set_msg_ts(self, action_id: str, msg_ts: str, channel: str) -> None:
+        """Store the Slack message ts of the approval card for later editing."""
+        record = self._load(action_id)
+        if record:
+            record.approval_msg_ts = msg_ts
+            self._save(record)
+        # Also store reverse lookup for reaction-based approval
+        get_redis().setex(
+            f"infra:approval:msgts:{channel}:{msg_ts}",
+            ACTION_TTL_SECONDS,
+            action_id,
+        )
+
     def _load(self, action_id: str) -> Optional[ActionRecord]:
         raw = get_redis().get(f"{_PREFIX}{action_id}")
         return _deserialize(raw) if raw else None
@@ -85,7 +101,7 @@ class ApprovalManager:
         r = get_redis()
         key = f"{_PREFIX}{record.action_id}"
         ttl = r.ttl(key)
-        r.setex(key, max(ttl, 60), _serialize(record))  # keep at least 60s
+        r.setex(key, max(ttl, 60), _serialize(record))
 
     def get_action(self, action_id: str) -> Optional[ActionRecord]:
         return self._load(action_id)
@@ -116,7 +132,6 @@ class ApprovalManager:
             self._save(record)
 
     def list_pending(self) -> list[ActionRecord]:
-        """Return all currently pending actions (used by /infra pending)."""
         r = get_redis()
         action_ids = r.smembers(_INDEX_KEY)
         pending = []
@@ -127,11 +142,67 @@ class ApprovalManager:
         return sorted(pending, key=lambda x: x.requested_at)
 
     def cleanup_expired(self) -> None:
-        """Prune ghost IDs from the index (keys that have TTL-expired)."""
         r = get_redis()
         for aid in r.smembers(_INDEX_KEY):
             if not r.exists(f"{_PREFIX}{aid}"):
                 r.srem(_INDEX_KEY, aid)
+
+    def start_escalation_watcher(
+        self,
+        action_id: str,
+        channel: str,
+        thread_ts: str,
+        client,  # Slack WebClient
+    ) -> None:
+        """Start a daemon thread that escalates if approval doesn't arrive in time."""
+        from config import settings  # noqa: PLC0415
+
+        if not settings.ESCALATION_WAIT_MINUTES:
+            return
+
+        def _watcher() -> None:
+            wait = settings.ESCALATION_WAIT_MINUTES * 60
+            time.sleep(wait)
+
+            record = self.get_action(action_id)
+            if not record or record.status != "pending":
+                return
+
+            # First escalation: DM the approver
+            try:
+                client.chat_postMessage(
+                    channel=settings.APPROVER_SLACK_ID,
+                    text=(
+                        f":timer_clock: Action `{action_id}` (`{record.action_type}`) "
+                        f"has been pending for {settings.ESCALATION_WAIT_MINUTES} min — "
+                        f"please approve or deny in <#{channel}>"
+                    ),
+                )
+                logger.info("Escalation DM sent for action %s", action_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Escalation DM failed: %s", exc)
+
+            # Second escalation: mention backup approver in thread
+            if settings.ESCALATION_APPROVER_ID:
+                time.sleep(wait)
+                record = self.get_action(action_id)
+                if not record or record.status != "pending":
+                    return
+                try:
+                    client.chat_postMessage(
+                        channel=channel,
+                        thread_ts=thread_ts,
+                        text=(
+                            f":loudspeaker: <@{settings.ESCALATION_APPROVER_ID}> escalating — "
+                            f"action `{action_id}` (`{record.action_type}`) "
+                            f"still needs approval after {settings.ESCALATION_WAIT_MINUTES * 2} min"
+                        ),
+                    )
+                    logger.info("Escalation to backup approver for action %s", action_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Backup escalation failed: %s", exc)
+
+        threading.Thread(target=_watcher, daemon=True).start()
 
 
 approval_manager = ApprovalManager()

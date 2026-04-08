@@ -1,0 +1,12 @@
+# UDID / IP → human-readable device name mapping
+# Bot will display these names instead of raw UDIDs in Slack messages.
+#
+# Format:
+#   <udid_or_ip>: "<display_name>"
+#
+# Examples:
+#   00008110-001234567890abcdef: "iPhone 14 Pro #3 (AP-rack-2)"
+#   10.151.12.34: "Android Node #7 (AP-rack-1)"
+#   00008020-000A1234B5678901: "iPhone 13 Mini #1 (EU-rack-3)"
+
+devices: {}

@@ -24,9 +24,23 @@ device_down:
   severity: high
   auto_action: device_status
 
+device_disconnected:
+  keywords:
+    - "device not found"
+    - "mismatch"
+    - "db mismatch"
+    - "not found"
+    - "physically disconnected"
+    - "cable disconnected"
+    - "device disconnected"
+    - "MISMATCH"
+  severity: high
+  auto_action: device_disconnected
+  # Note: "MISMATCH: DB=N, Device=device not found" patterns are handled here.
+  # Bot will skip normal flow and use DeviceDisconnectedAction (retry-once ADB reconnect).
+
 db_mismatch:
   keywords:
-    - "db mismatch"
     - "database mismatch"
     - "data inconsistency"
     - "wrong build"

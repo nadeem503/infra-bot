@@ -11,6 +11,8 @@ from config import settings
 from bot.listeners.message_listener import register_message_listeners
 from bot.listeners.action_listener import register_action_listeners
 from bot.listeners.slash_listener import register_slash_listeners
+from bot.listeners.reaction_listener import register_reaction_listeners
+from bot.listeners.home_tab_listener import register_home_tab_listener
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,6 +23,8 @@ def create_app() -> App:
     register_message_listeners(app)
     register_action_listeners(app)
     register_slash_listeners(app)
+    register_reaction_listeners(app)
+    register_home_tab_listener(app)
     return app
 
 
