@@ -46,6 +46,23 @@ JIRA_BROWSE = "https://lambdatest.atlassian.net/browse"
 
 CONFIDENCE_THRESHOLD = 0.6
 
+def _clean_slack_text(text: str) -> str:
+    """Strip Slack markdown so regex/Claude can parse device IDs reliably.
+
+    Removes:  <@USERID>  <#CHANID|name>  <URL|label>  <URL>
+    Decodes:  &amp; &lt; &gt; &nbsp;
+    """
+    # Strip bot/user/channel mentions: <@U...> <#C...|name>
+    text = re.sub(r'<@[A-Z0-9]+>', '', text)
+    text = re.sub(r'<#[A-Z0-9]+(?:\|[^>]+)?>', '', text)
+    # Strip links: <https://...|label> → label,  <https://...> → ''
+    text = re.sub(r'<https?://[^|>]*\|([^>]+)>', r'\1', text)
+    text = re.sub(r'<https?://[^>]+>', '', text)
+    # Decode HTML entities
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ')
+    return text.strip()
+
+
 def _is_thin_text(s: str) -> bool:
     """True when text has no meaningful words/IPs/serials (e.g. just '👆' or whitespace)."""
     return not re.search(r'[a-zA-Z0-9]{3,}', s)
@@ -486,7 +503,10 @@ def register_message_listeners(app: App) -> None:
                     classify_text = ctx + " " + text
                     logger.info("Thread reply enriched with context: %.80s", ctx)
 
-        # ── New flow: Claude CLI → route_local/classify/direct → Gemini fallback ──
+        # Strip Slack formatting before classification so regex/Claude see clean text
+        classify_text = _clean_slack_text(classify_text)
+
+        # ── New flow: Claude CLI → classify/direct → Gemini fallback ──
         #
         # 1. Claude reads the message and decides:
         #    a. route_local → message is a simple pattern, let local_classifier handle it

@@ -25,15 +25,29 @@ logger = get_logger(__name__)
 # ── Regex patterns ────────────────────────────────────────────────────────────
 
 _IP_RE      = re.compile(r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
-# iOS UDIDs: old format = 40 contiguous hex chars
-#            new format (iOS 13+) = XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-16hex, 25 chars with dash)
+
+# iOS UDIDs:
+#   old format: 40 contiguous hex chars (e.g. a1b2c3d4e5f6...)
+#   new format (iOS 13+): XXXXXXXX-XXXXXXXXXXXXXXXX  (8hex-dash-16hex)
 _UDID_RE    = re.compile(r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{16}|[0-9a-fA-F]{40})\b')
 _ANDROID_SERIAL_RE = re.compile(r'\b([A-Z][A-Z0-9]{7,19})\b')     # Android serial: uppercase, 8-20 chars
 _JIRA_KEY   = re.compile(r'\bTE-\d+\b', re.IGNORECASE)
 
-# Extracts (host, serial) from inline "IP,serial" — handles any-case serials (e.g. 6abb3838)
+# Extracts (host, serial) from inline "IP,serial" or "IP serial".
+# Serial allows dashes to support new iOS UDID format: 00008030-001509A236FA402E
 _IP_SERIAL_INLINE_RE = re.compile(
-    r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*,\s*([0-9a-zA-Z]{6,})',
+    r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*[,\s]\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{16}|[0-9a-zA-Z]{6,})',
+    re.IGNORECASE,
+)
+
+# Multi-line structured format:  "Udid\n<value>\nHost IP\n<value>" or "Host IP\n<value>\nUdid\n<value>"
+# Sent by AlertBot or users pasting structured alert details.
+_LABELED_UDID_RE  = re.compile(
+    r'(?:udid|uuid)\s*[:\n]\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{16}|[0-9a-fA-F]{40})',
+    re.IGNORECASE,
+)
+_LABELED_IP_RE    = re.compile(
+    r'(?:host\s*ip|host_ip|ip\s*address|hostip)\s*[:\n]\s*(10\.\d{1,3}\.\d{1,3}\.\d{1,3})',
     re.IGNORECASE,
 )
 
@@ -43,18 +57,18 @@ _INSTRUCTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Detects connectivity-check queries: "check connected", "is it online", etc.
+# Detects connectivity-check queries: "check connected", "is it online", "please check this device" etc.
 _DEVICE_CHECK_RE = re.compile(
     r'\b(check|verify|ping|is|test)\b.{0,40}\b(connected|online|alive|reachable|up|running)\b'
     r'|\b(connected|online|reachable)\b.{0,20}\b(on host|to host|on device)\b'
-    r'|\b(check|verify)\b.{0,20}\b(connected|connection|connectivity|status|if connected)\b',
+    r'|\b(check|verify|please\s+check)\b.{0,30}\b(connected|connection|connectivity|status|if connected|this device|device)\b',
     re.IGNORECASE,
 )
 
 # Matches lines in the format "10.x.x.x,SERIAL" — captures (host, serial) as a tuple.
-# Serial pattern is broad: any alphanumeric 6+ chars (covers uppercase Android, lowercase iOS hex, mixed).
+# Serial allows dashes for new iOS UDID format.
 _DEVICE_MAPPING_LINE_RE = re.compile(
-    r'^\s*(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*,\s*([0-9a-zA-Z]{6,})\s*$',
+    r'^\s*(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*[,]\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{16}|[0-9a-zA-Z]{6,})\s*$',
     re.MULTILINE,
 )
 
@@ -89,12 +103,23 @@ def _load_keywords() -> dict:
 
 def _extract_devices(text: str) -> list[str]:
     devices: list[str] = []
-    devices.extend(_UDID_RE.findall(text))
-    # Android serials: uppercase alphanumeric, must contain at least one digit
-    for m in _ANDROID_SERIAL_RE.findall(text):
-        if any(c.isdigit() for c in m):  # filter out all-letter words like "MISMATCH"
-            devices.append(m)
-    devices.extend(_IP_RE.findall(text))
+    # Prefer labeled fields first (e.g. "Udid: 00008030-..." "Host IP: 10.151.0.102")
+    for m in _LABELED_UDID_RE.findall(text):
+        devices.append(m)
+    for m in _LABELED_IP_RE.findall(text):
+        devices.append(m)
+    # Fall back to bare regex if labeled fields found nothing
+    if not devices:
+        devices.extend(_UDID_RE.findall(text))
+        for m in _ANDROID_SERIAL_RE.findall(text):
+            if any(c.isdigit() for c in m):
+                devices.append(m)
+        devices.extend(_IP_RE.findall(text))
+    else:
+        # Add any bare IPs not already captured
+        for ip in _IP_RE.findall(text):
+            if ip not in devices:
+                devices.append(ip)
     return list(dict.fromkeys(devices))  # deduplicate, preserve order
 
 

@@ -86,7 +86,10 @@ Host context:
 - UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). Android serials: alphanumeric 6-20 chars.
 
 For ACTION 1 (classify):
-{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","devices":[],"region":null,"host_type":null}}
+{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","devices":[],"region":null,"host_type":null}}
+
+For device_check intent always set "host" to the IP (10.x.x.x) and "udid" to the device serial/UDID.
+Also add both to "devices" list. For multi-device checks use "hosts":[] and "udids":[] arrays.
 
 Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | unknown
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch |
