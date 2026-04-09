@@ -194,7 +194,12 @@ def _run_bulk(record, user_id: str, client, channel: str, thread_ts: str) -> Non
         progress_lines[i] = f":hourglass: `[{i+1}/{n}]` `{device}` \u2192 in progress..."
         client.chat_update(channel=channel, ts=progress_ts, text=f"{header}\n" + "\n".join(progress_lines))
 
-        device_params = {**record.params, "udid": device, "host": device, "devices": [device]}
+        # For ssh_reboot: host=device (IP), preserve existing udid from record.params.
+        # Other actions: udid=device is fine (device IS the UDID/serial for those actions).
+        if record.action_type == "ssh_reboot":
+            device_params = {**record.params, "host": device, "devices": [device]}
+        else:
+            device_params = {**record.params, "udid": device, "host": device, "devices": [device]}
         action = ActionClass(params=device_params, triggered_by=user_id, channel=channel, region=record.region)
         try:
             result = action.run()

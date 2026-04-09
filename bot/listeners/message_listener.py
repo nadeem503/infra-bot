@@ -362,10 +362,26 @@ def _handle_infra_issue(
     region_display = rd.get_display_name(region_slug if region_slug != "unknown" else None)
 
     action_type = ISSUE_TO_ACTION.get(issue_category, "device_status")
+
+    # For ssh_reboot: separate host IPs from device UDIDs/serials.
+    # _run_bulk iterates over `devices` and SSH-connects to each — we must only include real IPs.
+    # UDID goes into action_params["udid"] so SSHAction can run the right reboot command.
+    _ip_re = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+    if action_type == "ssh_reboot":
+        host_ips = [d for d in devices if _ip_re.match(d)]
+        udid_list = [d for d in devices if not _ip_re.match(d)]
+        ssh_host = params.get("host") or (host_ips[0] if host_ips else (devices[0] if devices else ""))
+        ssh_udid = params.get("udid") or (udid_list[0] if udid_list else "")
+        ssh_devices = host_ips if host_ips else ([ssh_host] if ssh_host else [])
+    else:
+        ssh_host = params.get("host") or (devices[0] if devices else "")
+        ssh_udid = params.get("udid") or ""
+        ssh_devices = devices
+
     action_params = {
-        "devices": devices,
-        "udid": devices[0] if devices else "",
-        "host": devices[0] if devices else "",
+        "devices": ssh_devices,
+        "udid": ssh_udid,
+        "host": ssh_host,
         "query": "SELECT * FROM devices WHERE status = 'offline' LIMIT 10",
         "summary": f"[Infra-Bot] {issue_category} in {region_display}",
         "description": f"Detected via Slack: {text[:500]}",
