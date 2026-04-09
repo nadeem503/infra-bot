@@ -45,6 +45,19 @@ JIRA_BROWSE = "https://lambdatest.atlassian.net/browse"
 
 CONFIDENCE_THRESHOLD = 0.6
 
+# Only these users may trigger infra actions (device checks, restarts, Jira, etc.)
+# All other users receive greetings/capability replies only.
+AUTHORIZED_USER_IDS: frozenset[str] = frozenset({
+    "U04UTG30V9A",  # Nadeem Khan
+    "U03GPJ43TJT",  # Pratik Parmar
+    "U020L115A2X",  # Shivnarayan Shishodia
+})
+
+_UNAUTHORIZED_REPLY = (
+    ":no_entry: Sorry, you're not authorized to trigger infra actions.\n"
+    "Please contact <@U04UTG30V9A>, <@U03GPJ43TJT>, or <@U020L115A2X> for assistance."
+)
+
 def _clean_slack_text(text: str) -> str:
     """Strip Slack markdown so regex/Claude can parse device IDs reliably.
 
@@ -561,6 +574,12 @@ def register_message_listeners(app: App) -> None:
             thread_memory.add_message(channel, thread_ts, "assistant", _CAPABILITIES_REPLY)
             return
 
+        # --- Authorization check — only allowlisted users may trigger actions ---
+        if user_id not in AUTHORIZED_USER_IDS:
+            say(text=_UNAUTHORIZED_REPLY, thread_ts=thread_ts)
+            logger.warning("Unauthorized action attempt by %s: %.100s", user_id, text)
+            return
+
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
         thread_memory.add_message(channel, thread_ts, "user", text)
 
@@ -714,6 +733,9 @@ def register_message_listeners(app: App) -> None:
         value: str = body["actions"][0]["value"]
         user_id: str = body["user"]["id"]
         channel: str = body["channel"]["id"]
+        if user_id not in AUTHORIZED_USER_IDS:
+            client.chat_postMessage(channel=channel, text=_UNAUTHORIZED_REPLY)
+            return
         message_ts: str = body["message"]["ts"]
         thread_ts: str = body["message"].get("thread_ts", message_ts)
 
