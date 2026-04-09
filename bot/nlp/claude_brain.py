@@ -116,7 +116,13 @@ Use :rotating_light: for network/rack-level incidents.
 
 def _call_claude_cli(prompt: str, timeout: int = 30) -> str:
     """Run claude -p <prompt> as subprocess. Returns stdout text or raises."""
-    env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+    import os
+    env = {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        "HOME": os.environ.get("HOME", "/Users/ltadmin"),
+        "USER": os.environ.get("USER", "ltadmin"),
+        "LOGNAME": os.environ.get("LOGNAME", "ltadmin"),
+    }
     result = subprocess.run(
         [_CLAUDE_BIN, "-p", prompt],
         capture_output=True, text=True, timeout=timeout, env=env,
