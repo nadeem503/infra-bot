@@ -274,7 +274,7 @@ class AIBrain:
         self, text: str, thread_history: list[dict] | None = None
     ) -> list[types.Content]:
         contents: list[types.Content] = []
-        for msg in (thread_history or [])[-3:]:
+        for msg in (thread_history or [])[-10:]:
             role = "user" if msg.get("role") == "user" else "model"
             contents.append(
                 types.Content(role=role, parts=[types.Part(text=msg["content"])])
@@ -313,7 +313,7 @@ class AIBrain:
         # ── Claude CLI (primary — free, uses ltadmin subscription) ───────────
         try:
             thread_ctx = ""
-            for msg in (thread_history or [])[-3:]:
+            for msg in (thread_history or [])[-10:]:
                 role = "User" if msg.get("role") == "user" else "Bot"
                 thread_ctx += f"{role}: {msg['content']}\n"
 

@@ -110,6 +110,33 @@ def _extract_message_text(msg: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _build_live_thread_history(client, channel: str, thread_ts: str, current_ts: str, limit: int = 10) -> list[dict]:
+    """Fetch live Slack thread and return as Claude thread_history format.
+
+    Captures ALL messages (including non-@mention user messages) so corrections
+    like "use idevice_id not docker" posted without @mention are visible to Claude.
+    Returns list of {"role": "user"|"assistant", "content": str} dicts.
+    """
+    try:
+        replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
+        messages = replies.get("messages", [])
+        # Exclude the current message itself
+        messages = [m for m in messages if m.get("ts") != current_ts]
+        # Take last N messages (most recent context)
+        messages = messages[-limit:]
+        history = []
+        for m in messages:
+            txt = _extract_message_text(m).strip()
+            if not txt:
+                continue
+            role = "assistant" if m.get("bot_id") else "user"
+            history.append({"role": role, "content": txt})
+        return history
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Live thread history fetch failed: %s", exc)
+    return []
+
+
 def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str, full: bool = False) -> str:
     """Fetch Slack thread and return formatted context string.
 
@@ -524,12 +551,22 @@ def register_message_listeners(app: App) -> None:
         # --- Enrich with thread context when needed ---
         # Case 1 (thin mention): just "👆" or emoji — prepend most recent substantive msg.
         # Case 2 (context-dependent): "Summaries the thread", "tldr" etc — prepend full history.
-        # Case 3 (thread reply): any mention in a thread reply, not the root message.
-        #   The user likely refers to device/host info in the parent alert message.
-        #   Always inject the parent message so Claude/classifier can see the UDID + Host IP.
+        # Case 3 (thread reply): any mention inside a thread.
+        #   Replace Redis thread_history with LIVE Slack thread so Claude sees ALL messages —
+        #   including non-@mention corrections (e.g. "use idevice_id not docker") that Redis
+        #   never captures because it only stores @mention interactions.
         classify_text = text
         is_summarize = bool(_CONTEXT_DEPENDENT_RE.search(clean))
         is_thread_reply = thread_ts != event.get("ts", "")  # mentioned inside a thread
+
+        if is_thread_reply:
+            live_history = _build_live_thread_history(
+                client, channel, thread_ts, event.get("ts", ""), limit=10
+            )
+            if live_history:
+                thread_history = live_history
+                logger.info("Thread reply: using live Slack history (%d msgs)", len(live_history))
+
         if _is_thin_text(clean) or is_summarize or is_thread_reply:
             ctx = _build_thread_context(
                 client, channel, thread_ts, event.get("ts", ""),
