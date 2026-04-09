@@ -14,11 +14,11 @@ from utils.ssh_exec import ssh_exec
 logger = get_logger(__name__)
 
 _STATE_MAP = {
-    "device":       ("connected & authorized", ":white_check_mark:"),
-    "offline":      ("OFFLINE",               ":warning:"),
-    "unauthorized": ("UNAUTHORIZED",           ":warning:"),
-    "bootloader":   ("in bootloader",          ":warning:"),
-    "recovery":     ("in recovery mode",       ":warning:"),
+    "device":       (":white_check_mark:", "connected"),
+    "offline":      (":warning:",          "OFFLINE"),
+    "unauthorized": (":warning:",          "UNAUTHORIZED"),
+    "bootloader":   (":warning:",          "in bootloader"),
+    "recovery":     (":warning:",          "in recovery mode"),
 }
 
 
@@ -29,7 +29,7 @@ def _check_single(host: str, udid: str) -> tuple[str, str]:
     if ps["exit_code"] == -1:
         return ":x:", f"SSH to `{host}` failed: {ps['error'][:100]}"
 
-    container_status = ps["output"].strip()
+    container_status = ps["output"].strip().splitlines()[0]  # first line only, no stray newlines
     if not container_status:
         # Container not found — check if it exists at all (stopped)
         all_ps = ssh_exec(host, f"docker ps -a --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
@@ -47,7 +47,7 @@ def _check_single(host: str, udid: str) -> tuple[str, str]:
 
     state = raw.splitlines()[-1].strip()  # last line = state word
     icon, label = _STATE_MAP.get(state, (":information_source:", state))
-    return icon, f"{label} (container: `{container_status}`)"
+    return icon, f"{label} — container `{container_status}`"
 
 
 class DeviceCheckAction:
