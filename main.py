@@ -29,12 +29,48 @@ def create_app() -> App:
     return app
 
 
+PID_FILE = "/Users/ltadmin/infra-bot/bot.pid"
+
+
+def _write_pid() -> None:
+    import os
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def _remove_pid() -> None:
+    import os
+    try:
+        os.remove(PID_FILE)
+    except FileNotFoundError:
+        pass
+
+
 if __name__ == "__main__":
+    import atexit, os  # noqa: E401
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    logger.info("Starting Infra-Bot...")
+
+    # Kill any previously running instance before starting
+    if os.path.exists(PID_FILE):
+        try:
+            old_pid = int(open(PID_FILE).read().strip())
+            os.kill(old_pid, 0)          # check if process exists
+            os.kill(old_pid, 15)         # SIGTERM
+            import time; time.sleep(1)   # give it a moment to exit
+            logger.info("Stopped previous instance (PID %d)", old_pid)
+        except (ProcessLookupError, ValueError):
+            pass                         # process already gone
+        except PermissionError:
+            logger.warning("Could not stop PID %d — permission denied", old_pid)
+
+    _write_pid()
+    atexit.register(_remove_pid)
+
+    logger.info("Starting Infra-Bot (PID %d)...", os.getpid())
     log_bot_session("start")
 
     app = create_app()
