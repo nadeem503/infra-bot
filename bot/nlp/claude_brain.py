@@ -27,6 +27,33 @@ _QUOTA_MSG = (
 
 # Claude CLI path on the bot host
 _CLAUDE_BIN = "/opt/homebrew/bin/claude"
+_KEYCHAIN_DB = "/Users/ltadmin/Library/Keychains/login.keychain-db"
+
+_keychain_unlocked = False  # unlocked once per process lifetime
+
+
+def _ensure_keychain_unlocked() -> None:
+    """Unlock the login keychain so Claude CLI can read its OAuth token.
+
+    Idempotent — runs at most once per process. Required when bot starts
+    as a background process (nohup/SSH) where keychain is locked.
+    """
+    global _keychain_unlocked
+    if _keychain_unlocked:
+        return
+    try:
+        passwd = settings.HOST_PASS or "lambdatest123!"
+        result = subprocess.run(
+            ["security", "unlock-keychain", "-p", passwd, _KEYCHAIN_DB],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            logger.info("Keychain unlocked for Claude CLI")
+            _keychain_unlocked = True
+        else:
+            logger.warning("Keychain unlock failed: %s", result.stderr.strip()[:100])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Keychain unlock error: %s", exc)
 
 MODEL = "gemini-2.0-flash"
 
@@ -117,6 +144,7 @@ Use :rotating_light: for network/rack-level incidents.
 def _call_claude_cli(prompt: str, timeout: int = 30) -> str:
     """Run claude -p <prompt> as subprocess. Returns stdout text or raises."""
     import os
+    _ensure_keychain_unlocked()
     env = {
         "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         "HOME": os.environ.get("HOME", "/Users/ltadmin"),
