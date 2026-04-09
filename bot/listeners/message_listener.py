@@ -30,7 +30,6 @@ from bot.analyzers.root_cause_analyzer import (
 )
 from bot.nlp.claude_brain import brain, _jira_created_reply, _jira_assigned_reply, _unclear_reply, _invite_reply
 from utils.activity_log import log_user_request
-from bot.nlp.local_classifier import classify_local
 from bot.actions.jira_client import (
     create_issue, assign_issue, transition_issue,
     resolve_slack_user_to_jira, check_ticket_completeness,
@@ -561,15 +560,24 @@ def register_message_listeners(app: App) -> None:
 
         if intent == "device_check":
             from bot.actions.device_check_action import DeviceCheckAction  # noqa: PLC0415
-            host = params.get("host", "")
-            udid = params.get("udid", "")
+            host = params.get("host", "") or ""
+            udid = params.get("udid", "") or ""
             hosts = params.get("hosts") or []
             udids = params.get("udids") or []
+            # Flatten: Claude sometimes returns dicts inside devices/hosts/udids lists
+            def _flat_str(v) -> str:  # noqa: ANN001
+                if isinstance(v, str):
+                    return v
+                if isinstance(v, dict):
+                    return v.get("host") or v.get("ip") or v.get("udid") or v.get("serial") or ""
+                return str(v) if v else ""
+            hosts = [_flat_str(h) for h in hosts if h]
+            udids = [_flat_str(u) for u in udids if u]
             # If host not set but devices list has IPs vs serials, split them
             if not host:
-                devices_list = params.get("devices", [])
-                host = next((d for d in devices_list if d.startswith("10.")), "")
-                udid = udid or next((d for d in devices_list if not d.startswith("10.")), "")
+                devices_list = [_flat_str(d) for d in params.get("devices", []) if d]
+                host = next((d for d in devices_list if isinstance(d, str) and d.startswith("10.")), "")
+                udid = udid or next((d for d in devices_list if isinstance(d, str) and not d.startswith("10.")), "")
             bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids)
             say(text=bot_reply, thread_ts=thread_ts)
 
