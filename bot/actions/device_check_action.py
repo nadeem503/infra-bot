@@ -1,19 +1,35 @@
 """Device connectivity check action.
 
-Check flow per device:
-  1. docker ps --filter name=adbd_<UDID>   — is container running?
-  2. docker exec -i adbd_<UDID> adb -s <UDID> get-state  — targeted device state
+Host-type aware check flow:
+  macOS (iOS devices):
+    1. SSH uname -s → confirm Darwin
+    2. idevice_id -l | grep <UDID>      — is device connected?
+    3. tail LRR log for last error line  — lamda-remote-runner-<UDID>.log
+
+  Ubuntu (Android devices):
+    1. docker ps --filter name=adbd_<UDID>   — is container running?
+    2. docker exec -i adbd_<UDID> adb -s <UDID> get-state  — device state
+
+Host type detection order:
+  1. SSH `uname -s` → Darwin=macOS, Linux=Ubuntu
+  2. Fallback: UDID format — 8hex-dash-16hex or 40hex = iOS, else = Android
 
 No approval workflow — read-only diagnostic, returns result directly.
 """
 from __future__ import annotations
+
+import re
 
 from utils.logger import get_logger
 from utils.ssh_exec import ssh_exec
 
 logger = get_logger(__name__)
 
-_STATE_MAP = {
+# iOS UDID patterns
+_IOS_UDID_NEW = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{16}$')
+_IOS_UDID_OLD = re.compile(r'^[0-9a-fA-F]{40}$')
+
+_ANDROID_STATE_MAP = {
     "device":       (":white_check_mark:", "connected"),
     "offline":      (":warning:",          "OFFLINE"),
     "unauthorized": (":warning:",          "UNAUTHORIZED"),
@@ -21,9 +37,68 @@ _STATE_MAP = {
     "recovery":     (":warning:",          "in recovery mode"),
 }
 
+LRR_LOG_DIR = "/Users/ltadmin/Documents/LambdaRemoteRunner"
 
-def _check_single(host: str, udid: str) -> tuple[str, str]:
-    """Return (icon, status_text) for one host+udid pair."""
+
+def _is_ios_udid(udid: str) -> bool:
+    return bool(_IOS_UDID_NEW.match(udid) or _IOS_UDID_OLD.match(udid))
+
+
+def _detect_host_type(host: str) -> str:
+    """Return 'macos', 'ubuntu', or 'unknown' by SSHing uname -s."""
+    result = ssh_exec(host, "uname -s")
+    if result["exit_code"] == 0:
+        os_name = result["output"].strip().lower()
+        if "darwin" in os_name:
+            return "macos"
+        if "linux" in os_name:
+            return "ubuntu"
+    return "unknown"
+
+
+def _resolve_host_type(host: str, udid: str) -> str:
+    """Primary: SSH uname -s. Fallback: UDID format."""
+    host_type = _detect_host_type(host)
+    if host_type != "unknown":
+        return host_type
+    # SSH failed — infer from UDID format
+    logger.warning("host_type SSH detection failed for %s, inferring from UDID format", host)
+    return "macos" if _is_ios_udid(udid) else "ubuntu"
+
+
+# ── iOS / macOS check ─────────────────────────────────────────────────────────
+
+def _check_ios(host: str, udid: str) -> tuple[str, str]:
+    """Check iOS device connectivity via idevice_id + LRR log."""
+    # Step 1: is device listed by idevice_id?
+    connected = ssh_exec(host, f"idevice_id -l | grep -c '{udid}'")
+    if connected["exit_code"] == -1:
+        return ":x:", f"SSH to `{host}` failed: {connected['error'][:100]}"
+
+    count = connected["output"].strip()
+    if count != "1":
+        # Device not visible — grab last LRR log line for clue
+        log_path = f"{LRR_LOG_DIR}/lamda-remote-runner-{udid}.log"
+        tail = ssh_exec(host, f"tail -5 '{log_path}' 2>/dev/null || echo 'log not found'")
+        last_line = (tail["output"].strip().splitlines() or [""])[-1][:120]
+        return ":x:", f"not connected (idevice_id) — LRR: `{last_line}`"
+
+    # Step 2: device is connected — grab last meaningful LRR log line
+    log_path = f"{LRR_LOG_DIR}/lamda-remote-runner-{udid}.log"
+    tail = ssh_exec(host, f"tail -3 '{log_path}' 2>/dev/null || echo 'log not found'")
+    last_line = (tail["output"].strip().splitlines() or [""])[-1][:120]
+
+    # Flag errors in log even if device is connected
+    if any(w in last_line.lower() for w in ("error", "fail", "crash", "fatal", "exception")):
+        return ":warning:", f"connected but LRR error: `{last_line}`"
+
+    return ":white_check_mark:", "connected"
+
+
+# ── Android / Ubuntu check ────────────────────────────────────────────────────
+
+def _check_android(host: str, udid: str) -> tuple[str, str]:
+    """Check Android device connectivity via Docker + ADB."""
     # Step 1: is the container running?
     ps = ssh_exec(host, f"docker ps --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
     if ps["exit_code"] == -1:
@@ -31,7 +106,6 @@ def _check_single(host: str, udid: str) -> tuple[str, str]:
 
     container_status = (ps["output"].strip().splitlines() or [""])[0]
     if not container_status:
-        # Container not found — check if it exists at all (stopped)
         all_ps = ssh_exec(host, f"docker ps -a --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
         stopped_status = all_ps["output"].strip()
         if stopped_status:
@@ -45,18 +119,36 @@ def _check_single(host: str, udid: str) -> tuple[str, str]:
     if "error" in raw.lower() or "no devices" in raw.lower() or not raw:
         return ":x:", "not connected (device not responding)"
 
-    state = raw.splitlines()[-1].strip()  # last line = state word
-    icon, label = _STATE_MAP.get(state, (":information_source:", state))
+    state = raw.splitlines()[-1].strip()
+    icon, label = _ANDROID_STATE_MAP.get(state, (":information_source:", state))
     return icon, label
 
 
+# ── Unified entry point ───────────────────────────────────────────────────────
+
+def _check_single(host: str, udid: str) -> tuple[str, str]:
+    """Detect host type then run the correct check."""
+    host_type = _resolve_host_type(host, udid)
+    logger.info("device_check host=%s udid=%s host_type=%s", host, udid, host_type)
+
+    if host_type == "macos":
+        return _check_ios(host, udid)
+    else:
+        return _check_android(host, udid)
+
+
 class DeviceCheckAction:
-    """Runs ADB connectivity check on a DC host and returns a Slack-ready reply."""
+    """Runs connectivity check on a host and returns a Slack-ready reply.
+
+    Automatically uses the correct check method based on host OS:
+    - macOS  → idevice_id + LRR log  (iOS devices)
+    - Ubuntu → Docker + ADB          (Android devices)
+    """
 
     def execute(self, host: str, udid: str = "", hosts: list | None = None, udids: list | None = None) -> str:
         """Check device connectivity.
 
-        Multi-pair mode when hosts list has >1 entry (device mapping list).
+        Multi-pair mode when hosts list has >1 entry.
         Single mode for direct host+udid queries.
         """
         if hosts and len(hosts) > 1:

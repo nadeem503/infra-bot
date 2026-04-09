@@ -76,6 +76,40 @@ _CONTEXT_DEPENDENT_RE = re.compile(
 )
 
 
+def _extract_message_text(msg: dict) -> str:
+    """Extract all readable text from a Slack message including attachments and blocks.
+
+    AlertBot posts device info (UDID, Host IP, Status, Remark) in attachment fields,
+    not in the plain text field. Without this, thread context misses all device details.
+    """
+    parts = [msg.get("text", "").strip()]
+
+    # Attachments: each can have .text + .fields[].title/.value
+    for att in msg.get("attachments", []):
+        if att.get("text"):
+            parts.append(att["text"].strip())
+        if att.get("pretext"):
+            parts.append(att["pretext"].strip())
+        for field in att.get("fields", []):
+            title = field.get("title", "")
+            value = field.get("value", "")
+            if title and value:
+                parts.append(f"{title}: {value}")
+            elif value:
+                parts.append(value)
+
+    # Blocks: extract mrkdwn/plain_text section text
+    for block in msg.get("blocks", []):
+        text_obj = block.get("text", {})
+        if isinstance(text_obj, dict) and text_obj.get("text"):
+            parts.append(text_obj["text"].strip())
+        for field in block.get("fields", []):
+            if isinstance(field, dict) and field.get("text"):
+                parts.append(field["text"].strip())
+
+    return "\n".join(p for p in parts if p)
+
+
 def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str, full: bool = False) -> str:
     """Fetch Slack thread and return formatted context string.
 
@@ -92,21 +126,21 @@ def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str,
             parts = []
             for m in messages:
                 sender = m.get("username") or m.get("user") or m.get("bot_id", "bot")
-                txt = m.get("text", "").strip()
+                txt = _extract_message_text(m)
                 if txt:
                     parts.append(f"[{sender}]: {txt}")
             return "\n".join(parts)
         else:
             # Always include the parent (root) message — alert bots post UDID/Host IP
-            # there and it's the primary context for thread replies.
-            parent_text = messages[0].get("text", "").strip() if messages else ""
+            # in attachments/blocks there; it's the primary context for thread replies.
+            parent_text = _extract_message_text(messages[0]) if messages else ""
 
             # Also grab the most recent substantive non-bot follow-up (if any)
             recent_user = ""
             for m in reversed(messages[1:]):
                 if m.get("bot_id"):
                     continue
-                prior = m.get("text", "").strip()
+                prior = _extract_message_text(m)
                 if not _is_thin_text(prior):
                     recent_user = prior
                     break
