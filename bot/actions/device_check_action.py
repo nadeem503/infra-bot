@@ -29,7 +29,7 @@ def _check_single(host: str, udid: str) -> tuple[str, str]:
     if ps["exit_code"] == -1:
         return ":x:", f"SSH to `{host}` failed: {ps['error'][:100]}"
 
-    container_status = ps["output"].strip().splitlines()[0]  # first line only, no stray newlines
+    container_status = (ps["output"].strip().splitlines() or [""])[0]
     if not container_status:
         # Container not found — check if it exists at all (stopped)
         all_ps = ssh_exec(host, f"docker ps -a --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
