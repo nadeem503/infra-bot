@@ -17,6 +17,10 @@ class Settings:
     # Google Gemini AI (free tier — get key at https://aistudio.google.com/apikey)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
+    # OpenAI — fallback when Gemini quota is exhausted
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 

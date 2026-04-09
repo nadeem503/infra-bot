@@ -1,10 +1,7 @@
-"""AI brain for infra-bot — powered by Google Gemini (google-genai SDK).
+"""AI brain for infra-bot — Gemini primary, OpenAI fallback.
 
-Free tier: 1,500 requests/day, 15 req/min — free, no credit card needed.
-Get key at: https://aistudio.google.com/apikey
-
-Gemini is ONLY called when local_classifier returns None (ambiguous messages).
-Estimated real usage: ~3-5 calls/day under normal operation.
+Flow: local_classifier → Gemini → OpenAI (on Gemini quota exhaustion).
+Gemini free tier: 1,500 req/day.  OpenAI gpt-4o-mini: pay-as-you-go.
 """
 from __future__ import annotations
 
@@ -22,8 +19,8 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 _QUOTA_MSG = (
-    ":hourglass: Gemini AI is rate-limited right now (free tier quota). "
-    "Try again in ~1 minute, or add a billing account at aistudio.google.com."
+    ":hourglass: Both Gemini and OpenAI are unavailable right now. "
+    "Try again in a moment."
 )
 
 MODEL = "gemini-2.0-flash"
@@ -75,21 +72,29 @@ Use :rotating_light: for network/rack-level incidents.
 
 
 class AIBrain:
-    """Gemini-powered intelligence — used only when local classifier fails."""
+    """Gemini primary, OpenAI fallback — used only when local classifier fails."""
 
     def __init__(self) -> None:
         self._client: Optional[genai.Client] = None
+        self._openai_client = None
         self._cache: dict[str, tuple[float, any]] = {}  # key → (expires_ts, value)
 
     @property
     def client(self) -> genai.Client:
         if self._client is None:
             if not settings.GEMINI_API_KEY:
-                raise RuntimeError(
-                    "GEMINI_API_KEY is not set — get a free key at https://aistudio.google.com/apikey"
-                )
+                raise RuntimeError("GEMINI_API_KEY is not set")
             self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
         return self._client
+
+    @property
+    def openai_client(self):
+        if self._openai_client is None:
+            if not settings.OPENAI_API_KEY:
+                raise RuntimeError("OPENAI_API_KEY is not set")
+            from openai import OpenAI  # noqa: PLC0415
+            self._openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        return self._openai_client
 
     def _cache_get(self, key: str):
         entry = self._cache.get(key)
@@ -135,14 +140,40 @@ class AIBrain:
                 raise
         return None
 
+    def _classify_openai(self, text: str, thread_history: list[dict] | None = None) -> dict:
+        """Classify via OpenAI — called only when Gemini quota is exhausted."""
+        messages = [{"role": "system", "content": CLASSIFY_SYSTEM}]
+        for msg in (thread_history or [])[-3:]:
+            role = "user" if msg.get("role") == "user" else "assistant"
+            messages.append({"role": role, "content": msg["content"]})
+        messages.append({"role": "user", "content": text})
+
+        resp = self.openai_client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            response_format={"type": "json_object"},
+            max_tokens=256,
+        )
+        return json.loads(resp.choices[0].message.content)
+
+    def _rca_openai(self, signals_text: str) -> str:
+        """Root cause analysis via OpenAI fallback."""
+        resp = self.openai_client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": ROOT_CAUSE_SYSTEM},
+                {"role": "user", "content": f"Signals:\n{signals_text}"},
+            ],
+            max_tokens=200,
+        )
+        return resp.choices[0].message.content.strip()
+
     def classify(self, text: str, thread_history: list[dict] | None = None) -> dict:
         """Classify intent + extract params.
 
-        NOTE: call local_classifier first — only call this for ambiguous messages.
-        Thread history limited to last 3 messages to reduce token usage.
-        Results cached for 5 min by message hash.
+        Flow: local_classifier (caller) → Gemini → OpenAI fallback on 429.
+        Results cached 5 min.
         """
-        # Check cache (thread-unaware key for pure text, thread-aware if history present)
         extra = str(len(thread_history)) if thread_history else ""
         cache_key = self._cache_key("classify", text[:200], extra)
         cached = self._cache_get(cache_key)
@@ -150,6 +181,9 @@ class AIBrain:
             logger.debug("Classify cache hit")
             return cached
 
+        gemini_quota_hit = False
+
+        # ── Gemini ───────────────────────────────────────────────────────────
         try:
             contents = self._build_contents(text, thread_history)
 
@@ -160,17 +194,15 @@ class AIBrain:
                     config=types.GenerateContentConfig(
                         system_instruction=CLASSIFY_SYSTEM,
                         response_mime_type="application/json",
-                        max_output_tokens=256,  # reduced from 512 — JSON is small
+                        max_output_tokens=256,
                     ),
                 )
                 return json.loads(resp.text)
 
             result = self._call_with_retry(_call)
             if result:
-                logger.info(
-                    "Gemini classified: intent=%s confidence=%.2f",
-                    result.get("intent"), result.get("confidence", 0),
-                )
+                logger.info("Gemini classified: intent=%s confidence=%.2f",
+                            result.get("intent"), result.get("confidence", 0))
                 self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
                 return result
         except json.JSONDecodeError as exc:
@@ -178,21 +210,42 @@ class AIBrain:
         except Exception as exc:  # noqa: BLE001
             is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
             if is_quota:
-                logger.warning("Gemini quota exhausted for classify")
-                return {"intent": "_quota_exceeded", "params": {}, "confidence": 0.0}
-            logger.error("Gemini classify error: %s", exc)
+                logger.warning("Gemini quota exhausted — trying OpenAI fallback")
+                gemini_quota_hit = True
+            else:
+                logger.error("Gemini classify error: %s", exc)
+
+        # ── OpenAI fallback ──────────────────────────────────────────────────
+        if gemini_quota_hit and settings.OPENAI_API_KEY:
+            try:
+                result = self._classify_openai(text, thread_history)
+                logger.info("OpenAI classified: intent=%s confidence=%.2f",
+                            result.get("intent"), result.get("confidence", 0))
+                self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
+                return result
+            except json.JSONDecodeError as exc:
+                logger.error("OpenAI returned invalid JSON: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("OpenAI classify error: %s", exc)
+            return {"intent": "_quota_exceeded", "params": {}, "confidence": 0.0}
+
+        if gemini_quota_hit:
+            return {"intent": "_quota_exceeded", "params": {}, "confidence": 0.0}
+
         return {"intent": "unknown", "params": {}, "confidence": 0.0}
 
     def analyze_root_cause(self, signals_text: str) -> str:
         """Produce root cause diagnosis from correlated signals.
 
-        Cached for 10 min — same set of signals shouldn't re-run analysis.
+        Tries Gemini first, falls back to OpenAI on quota exhaustion.
+        Cached 10 min.
         """
         cache_key = self._cache_key("rca", signals_text)
         cached = self._cache_get(cache_key)
         if cached:
             return cached
 
+        gemini_quota_hit = False
         try:
             def _call():
                 resp = self.client.models.generate_content(
@@ -200,7 +253,7 @@ class AIBrain:
                     contents=f"Signals:\n{signals_text}",
                     config=types.GenerateContentConfig(
                         system_instruction=ROOT_CAUSE_SYSTEM,
-                        max_output_tokens=200,  # reduced from 400
+                        max_output_tokens=200,
                     ),
                 )
                 return resp.text.strip()
@@ -210,7 +263,20 @@ class AIBrain:
                 self._cache_set(cache_key, result, _ROOT_CAUSE_CACHE_TTL)
                 return result
         except Exception as exc:  # noqa: BLE001
-            logger.error("analyze_root_cause error: %s", exc)
+            is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+            if is_quota:
+                gemini_quota_hit = True
+            else:
+                logger.error("analyze_root_cause error: %s", exc)
+
+        if gemini_quota_hit and settings.OPENAI_API_KEY:
+            try:
+                result = self._rca_openai(signals_text)
+                self._cache_set(cache_key, result, _ROOT_CAUSE_CACHE_TTL)
+                return result
+            except Exception as exc:  # noqa: BLE001
+                logger.error("OpenAI RCA error: %s", exc)
+
         return ":mag: *Root Cause Analysis*\n• Multiple correlated signals — manual investigation recommended"
 
 
