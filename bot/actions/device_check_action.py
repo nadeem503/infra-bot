@@ -99,6 +99,17 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
         log_output = "..." + log_output[-_SLACK_LOG_MAX_CHARS:]
 
     if count != "1":
+        # Check if LRR reports the device agent as healthy — if so this is likely a
+        # momentary USB flicker (usbmuxd lost the device) rather than a real outage.
+        lrr_healthy = any(s in log_output.lower() for s in (
+            "ios-device-agent is healthy", "agent health notified", "200 ok",
+        ))
+        if lrr_healthy:
+            return (
+                ":warning:",
+                f"not listed by idevice_id (possible USB flicker) — LRR agent is healthy\n"
+                f"*LRR log (last {log_lines} lines):*\n```{log_output}```",
+            )
         return ":x:", f"not connected (idevice_id)\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
 
     # Device connected — show log, flag errors

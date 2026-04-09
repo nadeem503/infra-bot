@@ -661,7 +661,7 @@ def register_message_listeners(app: App) -> None:
             udid = params.get("udid", "") or ""
             hosts = params.get("hosts") or []
             udids = params.get("udids") or []
-            log_lines = int(params.get("log_lines") or 50)
+            log_lines = int(params.get("log_lines") or 20)
             # Flatten: Claude sometimes returns dicts inside devices/hosts/udids lists
             def _flat_str(v) -> str:  # noqa: ANN001
                 if isinstance(v, str):
