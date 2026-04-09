@@ -462,13 +462,15 @@ def register_message_listeners(app: App) -> None:
         thread_memory.add_message(channel, thread_ts, "user", text)
 
         # --- Enrich with thread context when needed ---
-        # Case 1 (thin mention): user types "👆" or just an emoji after sharing device info.
-        #   → prepend most recent substantive thread message.
-        # Case 2 (context-dependent): "Summaries the thread", "tldr", "explain above", etc.
-        #   → prepend full thread history so Claude can actually summarize/explain it.
+        # Case 1 (thin mention): just "👆" or emoji — prepend most recent substantive msg.
+        # Case 2 (context-dependent): "Summaries the thread", "tldr" etc — prepend full history.
+        # Case 3 (thread reply): any mention in a thread reply, not the root message.
+        #   The user likely refers to device/host info in the parent alert message.
+        #   Always inject the parent message so Claude/classifier can see the UDID + Host IP.
         classify_text = text
         is_summarize = bool(_CONTEXT_DEPENDENT_RE.search(clean))
-        if _is_thin_text(clean) or is_summarize:
+        is_thread_reply = thread_ts != event.get("ts", "")  # mentioned inside a thread
+        if _is_thin_text(clean) or is_summarize or is_thread_reply:
             ctx = _build_thread_context(
                 client, channel, thread_ts, event.get("ts", ""),
                 full=is_summarize,
@@ -482,7 +484,7 @@ def register_message_listeners(app: App) -> None:
                     logger.info("Summarize request — enriched with full thread (%d chars)", len(ctx))
                 else:
                     classify_text = ctx + " " + text
-                    logger.info("Thin mention enriched with prior thread msg: %.80s", ctx)
+                    logger.info("Thread reply enriched with context: %.80s", ctx)
 
         # ── New flow: Claude CLI → route_local/classify/direct → Gemini fallback ──
         #

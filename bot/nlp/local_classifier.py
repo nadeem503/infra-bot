@@ -25,7 +25,9 @@ logger = get_logger(__name__)
 # ── Regex patterns ────────────────────────────────────────────────────────────
 
 _IP_RE      = re.compile(r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
-_UDID_RE    = re.compile(r'\b([0-9a-fA-F]{40})\b')                 # iOS UDID (40-char hex)
+# iOS UDIDs: old format = 40 contiguous hex chars
+#            new format (iOS 13+) = XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-16hex, 25 chars with dash)
+_UDID_RE    = re.compile(r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{16}|[0-9a-fA-F]{40})\b')
 _ANDROID_SERIAL_RE = re.compile(r'\b([A-Z][A-Z0-9]{7,19})\b')     # Android serial: uppercase, 8-20 chars
 _JIRA_KEY   = re.compile(r'\bTE-\d+\b', re.IGNORECASE)
 

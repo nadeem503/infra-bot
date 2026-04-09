@@ -88,7 +88,7 @@ Host context:
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
 - AP=10.151.x.x  Dublin=10.100.x.x  US=10.146.x.x
-- UDIDs: 40-char hex (iOS). Android serials: alphanumeric 6-20 chars.
+- UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). Android serials: alphanumeric 6-20 chars.
 
 For ACTION 1 (route_local): {"action":"route_local"}
 
@@ -131,7 +131,7 @@ Return ONLY JSON:
 "ticket_key":"","issue_category":"","devices":[],"region":null,"host_type":null}}
 
 Rules:
-- UDIDs: 40-char hex. IPs: 10.151→ap, 10.100→dublin, 10.146→us
+- UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). IPs: 10.151→ap, 10.100→dublin, 10.146→us
 - MISMATCH/device not found → device_disconnected
 - Slack IDs: <@U...> format, 11 chars starting with U
 - Use thread context for follow-up messages missing device info
