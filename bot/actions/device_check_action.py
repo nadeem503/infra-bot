@@ -103,6 +103,7 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
         # momentary USB flicker (usbmuxd lost the device) rather than a real outage.
         lrr_healthy = any(s in log_output.lower() for s in (
             "ios-device-agent is healthy", "agent health notified", "200 ok",
+            "ltapp response status code -> 200",
         ))
         if lrr_healthy:
             return (
