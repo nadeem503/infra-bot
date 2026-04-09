@@ -37,7 +37,13 @@ _ANDROID_STATE_MAP = {
     "recovery":     (":warning:",          "in recovery mode"),
 }
 
-LRR_LOG_DIR = "/Users/ltadmin/Documents/LambdaRemoteRunner"
+LRR_LOG_DIR  = "/Users/ltadmin/Documents/LambdaRemoteRunner"
+IHM_LOG      = "/Users/ltadmin/ios-host-manager/com.lambda.ihm.stdout"
+LRP_MAC_LOG  = "/Users/ltadmin/Documents/LambdaRemoteProvider/lambda-remote-provider.log"
+LRP_UBU_LOG  = "/home/ltadmin/Documents/LambdaRemoteProvider/lambda-remote-provider.log"
+RECON_MAC_LOG = "/Users/ltadmin/reconciler/com.lambda.reconciler.stdout"
+RECON_UBU_LOG = "/home/ltadmin/reconciler/runner.log"
+RMDM_LOG     = "/home/ltadmin/rdtsa/logs/rdtsa.log"
 
 
 def _is_ios_udid(udid: str) -> bool:

@@ -105,6 +105,15 @@ Active=ready | Busy=in-use | Cleanup=post-test clearing | Faulty=needs fix | Dia
 - "screen_off_timeout is not 1800000" → issue_category=adb_issue (device locked)
 - No devices on host (go-adb shows 0) → issue_category=device_disconnected (run resetusb.sh)
 
+== SERVICE LOG PATHS ==
+macOS:  LRR=/Users/ltadmin/Documents/LambdaRemoteRunner/lamda-remote-runner-<UDID>.log
+        IHM=/Users/ltadmin/ios-host-manager/com.lambda.ihm.stdout
+        LRP=/Users/ltadmin/Documents/LambdaRemoteProvider/lambda-remote-provider.log
+        Reconciler=/Users/ltadmin/reconciler/com.lambda.reconciler.stdout
+Ubuntu: RMDM=/home/ltadmin/rdtsa/logs/rdtsa.log
+        LRP=/home/ltadmin/Documents/LambdaRemoteProvider/lambda-remote-provider.log
+        Reconciler=/home/ltadmin/reconciler/runner.log
+
 == KEY FIX STEPS (use in direct replies) ==
 Reboot Android: `docker exec -it adbd_<UDID> adb -s <UDID> reboot`
 Check container: `docker exec -it adbd_<UDID> adb devices`
