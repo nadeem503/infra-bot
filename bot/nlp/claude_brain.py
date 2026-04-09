@@ -69,38 +69,45 @@ _ROOT_CAUSE_CACHE_TTL = 600
 CLAUDE_ROUTER_SYSTEM = """
 You are Infra-Bot, a Slack assistant for LambdaTest's Real Device Cloud infrastructure team.
 
-Read the Slack message and choose ONE action:
+Read the Slack message and choose ONE of three actions:
 
-ACTION 1 — CLASSIFY: The message is a known infra/ops pattern that the bot's local handlers
-can process (device issues, service restarts, Jira tasks, device connectivity checks, etc).
+ACTION 1 — route_local: The message is a clear, unambiguous infra/ops command that matches
+a simple pattern (IP down, service restart, device check, Jira create/assign, ADB restart, etc).
+The local rule engine can handle it reliably without your intelligence.
+Use this for straightforward operational commands where intent is obvious.
 
-ACTION 2 — DIRECT: The message needs intelligent reasoning, explanation, troubleshooting advice,
-or is a general question that doesn't fit a rigid action pattern. Reply directly in Slack format.
+ACTION 2 — classify: The message needs your reasoning to extract intent + params accurately.
+Use this when the message is infra-related but ambiguous, has complex context, mentions
+multiple devices/services, needs thread context to interpret, or local rules would mis-classify it.
+
+ACTION 3 — direct: The message needs an intelligent conversational reply — explanations,
+troubleshooting advice, summaries, questions, anything that isn't a structured bot action.
+Use this for: "what happened?", "why is X failing?", "summarize this", "explain Y", etc.
 
 Host context:
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
-- AP region=10.151.x.x, Dublin=10.100.x.x, US=10.146.x.x
-- UDIDs: 40-char hex (iOS). Android serials: alphanumeric, 6-20 chars.
+- AP=10.151.x.x  Dublin=10.100.x.x  US=10.146.x.x
+- UDIDs: 40-char hex (iOS). Android serials: alphanumeric 6-20 chars.
 
-For ACTION 1 (CLASSIFY), return this exact JSON:
+For ACTION 1 (route_local): {"action":"route_local"}
+
+For ACTION 2 (classify):
 {"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","devices":[],"region":null,"host_type":null}}
 
 Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | unknown
-
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch |
 jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down | resigner_down |
 ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down | android_container_down |
 cert_expired | host_service_status
 
-For ACTION 2 (DIRECT), return this exact JSON:
-{"action":"direct","reply":"<slack-formatted response, use *bold*, bullet points, max 8 lines>"}
+For ACTION 3 (direct):
+{"action":"direct","reply":"<slack-formatted response, *bold*, bullet points, max 8 lines>"}
 
 Rules:
-- Slack user IDs look like <@U04UTG30V9A> — extract the ID part (starts with U, 9-12 chars)
+- Slack user IDs: <@U04UTG30V9A> → extract U... part (9-12 chars starting with U)
 - IP prefix → region: 10.151→ap, 10.100→dublin, 10.146→us
-- For device_disconnected / MISMATCH → use intent=infra_issue, issue_category=device_disconnected
-- For "what can you do" / "help" type questions → use action=direct
+- MISMATCH / device not found → intent=infra_issue, issue_category=device_disconnected
 - Reply ONLY with valid JSON. No markdown fences, no explanation outside the JSON.
 """
 
@@ -266,7 +273,15 @@ class AIBrain:
                 parsed = json.loads(json_match.group())
                 action = parsed.get("action", "classify")
 
-                if action == "direct":
+                if action == "route_local":
+                    # Claude says: simple pattern — let local classifier handle it
+                    result = {"intent": "_route_local", "confidence": 1.0,
+                              "params": {}, "_source": "claude"}
+                    logger.info("Claude CLI → route_local")
+                    # Don't cache route_local — local classifier decides per-message
+                    return result
+
+                elif action == "direct":
                     # Claude is handling this directly — wrap as _direct_reply intent
                     reply = parsed.get("reply", "")
                     if reply:
@@ -303,7 +318,17 @@ class AIBrain:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Claude CLI classify failed: %s — falling back to Gemini", exc)
 
-        # ── Gemini fallback ──────────────────────────────────────────────────
+        # ── Gemini fallback (Claude failed entirely) ─────────────────────────
+        return self.classify_gemini(text, thread_history)
+
+    def classify_gemini(self, text: str, thread_history: list[dict] | None = None) -> dict:
+        """Gemini-only classification — called as last-resort fallback."""
+        extra = str(len(thread_history)) if thread_history else ""
+        cache_key = self._cache_key("classify_gemini", text[:200], extra)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             contents = self._build_contents(text, thread_history)
 
@@ -321,6 +346,7 @@ class AIBrain:
 
             result = self._call_with_retry(_call)
             if result:
+                result["_source"] = "gemini"
                 logger.info("Gemini classified: intent=%s confidence=%.2f",
                             result.get("intent"), result.get("confidence", 0))
                 self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
@@ -331,10 +357,11 @@ class AIBrain:
             is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
             if is_quota:
                 logger.warning("Gemini quota exhausted")
-                return {"intent": "_quota_exceeded", "params": {}, "confidence": 0.0}
+                return {"intent": "_quota_exceeded", "params": {}, "confidence": 0.0,
+                        "_source": "gemini"}
             logger.error("Gemini classify error: %s", exc)
 
-        return {"intent": "unknown", "params": {}, "confidence": 0.0}
+        return {"intent": "unknown", "params": {}, "confidence": 0.0, "_source": "gemini"}
 
     def analyze_root_cause(self, signals_text: str) -> str:
         """Produce root cause diagnosis from correlated signals.

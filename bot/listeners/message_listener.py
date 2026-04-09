@@ -484,13 +484,29 @@ def register_message_listeners(app: App) -> None:
                     classify_text = ctx + " " + text
                     logger.info("Thin mention enriched with prior thread msg: %.80s", ctx)
 
-        # --- Try local classifier first (no Gemini call) ---
-        classification = classify_local(classify_text, thread_history or None)
-        if classification:
-            source = "local"
+        # ── New flow: Claude CLI → route_local/classify/direct → Gemini fallback ──
+        #
+        # 1. Claude reads the message and decides:
+        #    a. route_local → message is a simple pattern, let local_classifier handle it
+        #    b. classify    → Claude provides structured intent + params directly
+        #    c. direct      → Claude replies conversationally (summarize, explain, etc.)
+        # 2. If route_local → run local_classifier; if that also fails → Gemini
+        # 3. If Claude CLI fails → Gemini fallback directly
+
+        classification = brain.classify(classify_text, thread_history=thread_history or None)
+        intent_raw = classification.get("intent")
+
+        if intent_raw == "_route_local":
+            # Claude decided: simple pattern — run local classifier
+            local_result = classify_local(classify_text, thread_history or None)
+            if local_result:
+                classification = local_result
+                source = "local"
+            else:
+                # Local classifier couldn't match either — Gemini as last resort
+                classification = brain.classify_gemini(classify_text, thread_history=thread_history or None)
+                source = classification.get("_source", "gemini")
         else:
-            # Local classifier couldn't handle it — Claude CLI (then Gemini fallback)
-            classification = brain.classify(classify_text, thread_history=thread_history or None)
             source = classification.get("_source", "claude")
 
         intent = classification.get("intent", "unknown")
