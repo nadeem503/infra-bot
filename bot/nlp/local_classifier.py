@@ -29,6 +29,18 @@ _UDID_RE    = re.compile(r'\b([0-9a-fA-F]{40})\b')                 # iOS UDID (4
 _ANDROID_SERIAL_RE = re.compile(r'\b([A-Z][A-Z0-9]{7,19})\b')     # Android serial: uppercase, 8-20 chars
 _JIRA_KEY   = re.compile(r'\bTE-\d+\b', re.IGNORECASE)
 
+# Extracts (host, serial) from inline "IP,serial" — handles any-case serials (e.g. 6abb3838)
+_IP_SERIAL_INLINE_RE = re.compile(
+    r'\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*,\s*([0-9a-zA-Z]{6,})',
+    re.IGNORECASE,
+)
+
+# When user says "check using/with <tool>" they're giving instructions, not reporting an issue
+_INSTRUCTION_RE = re.compile(
+    r'\b(check|verify|test)\b.{0,60}\b(with|using|via|through)\b.{0,40}\b(adb|docker|go.?adb|shell)\b',
+    re.IGNORECASE,
+)
+
 # Detects connectivity-check queries: "check connected", "is it online", etc.
 _DEVICE_CHECK_RE = re.compile(
     r'\b(check|verify|ping|is|test)\b.{0,40}\b(connected|online|alive|reachable|up|running)\b'
@@ -220,18 +232,22 @@ def classify_local(text: str, thread_history: list[dict] | None = None) -> Optio
     # This is a READ-ONLY check — runs adb devices on the host directly,
     # no Gemini, no approval workflow.
     if _DEVICE_CHECK_RE.search(clean):
-        devices = _extract_devices(clean)
-        # Split: IP addresses → host, everything else (UDID/serial) → device
-        host = next((d for d in devices if d.startswith("10.")), "")
-        udid = next((d for d in devices if not d.startswith("10.")), "")
-        region = _detect_region(devices, clean)
+        # First try inline IP,serial extraction (handles any-case serials like 6abb3838)
+        inline = _IP_SERIAL_INLINE_RE.findall(clean)
+        if inline:
+            host, udid = inline[0]
+        else:
+            devices = _extract_devices(clean)
+            host = next((d for d in devices if d.startswith("10.")), "")
+            udid = next((d for d in devices if not d.startswith("10.")), "")
+        region = _detect_region([host] if host else [], clean)
         return {
             "intent": "device_check",
             "confidence": 0.90,
             "params": {
                 "host": host,
                 "udid": udid,
-                "devices": devices,
+                "devices": [host, udid] if host and udid else ([host] if host else []),
                 "region": region,
                 "host_type": None,
                 "title": "", "issue_type": "Task", "assignee": "",
@@ -241,6 +257,11 @@ def classify_local(text: str, thread_history: list[dict] | None = None) -> Optio
         }
 
     # ── 5. Infra issue via keyword match ──────────────────────────────────────
+    # Skip keyword matching when user is giving tool instructions ("check using adb/docker")
+    # rather than reporting an issue — these should go to Gemini for proper handling.
+    if _INSTRUCTION_RE.search(clean):
+        return None
+
     match = _match_issue_category(clean)
     if not match:
         # No keyword match and no thread context → let Gemini handle
