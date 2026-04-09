@@ -97,13 +97,23 @@ def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str,
                     parts.append(f"[{sender}]: {txt}")
             return "\n".join(parts)
         else:
-            # Most recent substantive non-bot message
-            for m in reversed(messages):
+            # Always include the parent (root) message — alert bots post UDID/Host IP
+            # there and it's the primary context for thread replies.
+            parent_text = messages[0].get("text", "").strip() if messages else ""
+
+            # Also grab the most recent substantive non-bot follow-up (if any)
+            recent_user = ""
+            for m in reversed(messages[1:]):
                 if m.get("bot_id"):
                     continue
-                prior = m.get("text", "")
+                prior = m.get("text", "").strip()
                 if not _is_thin_text(prior):
-                    return prior
+                    recent_user = prior
+                    break
+
+            if parent_text and recent_user:
+                return f"{parent_text}\n{recent_user}"
+            return parent_text or recent_user
     except Exception as exc:  # noqa: BLE001
         logger.warning("Thread context fetch failed: %s", exc)
     return ""
