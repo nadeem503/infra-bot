@@ -84,6 +84,32 @@ _IDEVICE_ID = "/opt/homebrew/bin/idevice_id"   # full path — SSH non-interacti
 _SLACK_LOG_MAX_CHARS = 2500                       # keep log output inside one Slack message
 
 
+def _lrr_health_summary(log_output: str) -> str:
+    """Parse LRR log and return a one-line health summary for Slack.
+
+    Checks for ios-device-agent and LTApp status codes in the log.
+    Example: `:white_check_mark: ios-device-agent healthy  |  :white_check_mark: LTApp 200 OK`
+    """
+    log_low = log_output.lower()
+
+    agent_ok = "ios-device-agent is healthy" in log_low
+    agent_icon = ":white_check_mark:" if agent_ok else ":x:"
+    agent_label = "healthy" if agent_ok else "not healthy"
+
+    ltapp_ok = (
+        "ltapp response status code -> 200" in log_low
+        or "agent health notified: 200 ok" in log_low
+        or "200 ok" in log_low
+    )
+    ltapp_icon = ":white_check_mark:" if ltapp_ok else ":x:"
+    ltapp_label = "200 OK" if ltapp_ok else "not 200"
+
+    return (
+        f"*LRR Health:* {agent_icon} ios-device-agent {agent_label}"
+        f"  |  {ltapp_icon} LTApp {ltapp_label}"
+    )
+
+
 def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
     """Check iOS device connectivity via idevice_id (full path) + LRR log."""
     # Step 1: is device listed by idevice_id? Use full path to avoid PATH issues in non-interactive SSH.
@@ -98,6 +124,9 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
     if len(log_output) > _SLACK_LOG_MAX_CHARS:
         log_output = "..." + log_output[-_SLACK_LOG_MAX_CHARS:]
 
+    health = _lrr_health_summary(log_output)
+    log_block = f"*LRR log (last {log_lines} lines):*\n```{log_output}```"
+
     if count != "1":
         # Check if LRR reports the device agent as healthy — if so this is likely a
         # momentary USB flicker (usbmuxd lost the device) rather than a real outage.
@@ -109,15 +138,15 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
             return (
                 ":warning:",
                 f"not listed by idevice_id (possible USB flicker) — LRR agent is healthy\n"
-                f"*LRR log (last {log_lines} lines):*\n```{log_output}```",
+                f"{health}\n{log_block}",
             )
-        return ":x:", f"not connected (idevice_id)\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
+        return ":x:", f"not connected (idevice_id)\n{health}\n{log_block}"
 
     # Device connected — show log, flag errors
     if any(w in log_output.lower() for w in ("error", "fail", "crash", "fatal", "exception")):
-        return ":warning:", f"connected but LRR errors detected\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
+        return ":warning:", f"connected but LRR errors detected\n{health}\n{log_block}"
 
-    return ":white_check_mark:", f"connected\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
+    return ":white_check_mark:", f"connected\n{health}\n{log_block}"
 
 
 # ── Android / Ubuntu check ────────────────────────────────────────────────────
@@ -151,7 +180,7 @@ def _check_android(host: str, udid: str) -> tuple[str, str]:
 
 # ── Unified entry point ───────────────────────────────────────────────────────
 
-def _check_single(host: str, udid: str, log_lines: int = 50) -> tuple[str, str]:
+def _check_single(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
     """Detect host type then run the correct check."""
     host_type = _resolve_host_type(host, udid)
     logger.info("device_check host=%s udid=%s host_type=%s log_lines=%d", host, udid, host_type, log_lines)
@@ -166,7 +195,7 @@ class DeviceCheckAction:
     """Runs connectivity check on a host and returns a Slack-ready reply.
 
     Automatically uses the correct check method based on host OS:
-    - macOS  → idevice_id + LRR log (log_lines lines, default 50)
+    - macOS  → idevice_id + LRR log (log_lines lines, default 20)
     - Ubuntu → Docker + ADB
     """
 
@@ -176,11 +205,11 @@ class DeviceCheckAction:
         udid: str = "",
         hosts: list | None = None,
         udids: list | None = None,
-        log_lines: int = 50,
+        log_lines: int = 20,
     ) -> str:
         """Check device connectivity.
 
-        log_lines: number of log lines to tail (default 50, user can request more/less).
+        log_lines: number of log lines to tail (default 20, user can request more/less).
         Multi-pair mode when hosts list has >1 entry.
         Single mode for direct host+udid queries.
         """
@@ -196,7 +225,7 @@ class DeviceCheckAction:
         logger.info("device_check host=%s udid=%s status=%s", host, udid, status)
         return f"{icon} *Device `{udid}`* on `{host}` — {status}"
 
-    def _execute_multi(self, hosts: list, udids: list, log_lines: int = 50) -> str:
+    def _execute_multi(self, hosts: list, udids: list, log_lines: int = 20) -> str:
         """Check connectivity for multiple host,udid pairs."""
         pairs = list(zip(hosts, udids))[:50]
         lines = [":mag: *Device connectivity check*\n"]
