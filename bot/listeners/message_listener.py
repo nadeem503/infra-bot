@@ -496,20 +496,7 @@ def register_message_listeners(app: App) -> None:
         # 3. If Claude CLI fails → Gemini fallback directly
 
         classification = brain.classify(classify_text, thread_history=thread_history or None)
-        intent_raw = classification.get("intent")
-
-        if intent_raw == "_route_local":
-            # Claude decided: simple pattern — run local classifier
-            local_result = classify_local(classify_text, thread_history or None)
-            if local_result:
-                classification = local_result
-                source = "local"
-            else:
-                # Local classifier couldn't match either — Gemini as last resort
-                classification = brain.classify_gemini(classify_text, thread_history=thread_history or None)
-                source = classification.get("_source", "gemini")
-        else:
-            source = classification.get("_source", "claude")
+        source = classification.get("_source", "claude")
 
         intent = classification.get("intent", "unknown")
         params = classification.get("params", {})

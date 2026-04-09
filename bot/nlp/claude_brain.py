@@ -69,19 +69,14 @@ _ROOT_CAUSE_CACHE_TTL = 600
 CLAUDE_ROUTER_SYSTEM = """
 You are Infra-Bot, a Slack assistant for LambdaTest's Real Device Cloud infrastructure team.
 
-Read the Slack message and choose ONE of three actions:
+Read the Slack message and choose ONE of two actions:
 
-ACTION 1 — route_local: The message is a clear, unambiguous infra/ops command that matches
-a simple pattern (IP down, service restart, device check, Jira create/assign, ADB restart, etc).
-The local rule engine can handle it reliably without your intelligence.
-Use this for straightforward operational commands where intent is obvious.
+ACTION 1 — classify: The message is infra/ops related. Extract the intent and params.
+Use this for device issues, service restarts, Jira tasks, device checks, ADB issues, reboots,
+or anything that maps to a structured bot action.
 
-ACTION 2 — classify: The message needs your reasoning to extract intent + params accurately.
-Use this when the message is infra-related but ambiguous, has complex context, mentions
-multiple devices/services, needs thread context to interpret, or local rules would mis-classify it.
-
-ACTION 3 — direct: The message needs an intelligent conversational reply — explanations,
-troubleshooting advice, summaries, questions, anything that isn't a structured bot action.
+ACTION 2 — direct: The message needs an intelligent conversational reply — explanations,
+troubleshooting advice, summaries, questions, or anything that isn't a structured bot action.
 Use this for: "what happened?", "why is X failing?", "summarize this", "explain Y", etc.
 
 Host context:
@@ -90,9 +85,7 @@ Host context:
 - AP=10.151.x.x  Dublin=10.100.x.x  US=10.146.x.x
 - UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). Android serials: alphanumeric 6-20 chars.
 
-For ACTION 1 (route_local): {"action":"route_local"}
-
-For ACTION 2 (classify):
+For ACTION 1 (classify):
 {"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","devices":[],"region":null,"host_type":null}}
 
 Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | unknown
@@ -101,7 +94,7 @@ jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down | r
 ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down | android_container_down |
 cert_expired | host_service_status
 
-For ACTION 3 (direct):
+For ACTION 2 (direct):
 {"action":"direct","reply":"<slack-formatted response, *bold*, bullet points, max 8 lines>"}
 
 Rules:
@@ -273,15 +266,7 @@ class AIBrain:
                 parsed = json.loads(json_match.group())
                 action = parsed.get("action", "classify")
 
-                if action == "route_local":
-                    # Claude says: simple pattern — let local classifier handle it
-                    result = {"intent": "_route_local", "confidence": 1.0,
-                              "params": {}, "_source": "claude"}
-                    logger.info("Claude CLI → route_local")
-                    # Don't cache route_local — local classifier decides per-message
-                    return result
-
-                elif action == "direct":
+                if action == "direct":
                     # Claude is handling this directly — wrap as _direct_reply intent
                     reply = parsed.get("reply", "")
                     if reply:
