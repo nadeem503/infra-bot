@@ -37,9 +37,10 @@ _DEVICE_CHECK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Matches lines in the format "10.x.x.x,SERIAL" — device mapping list
+# Matches lines in the format "10.x.x.x,SERIAL" — captures (host, serial) as a tuple.
+# Serial pattern is broad: any alphanumeric 6+ chars (covers uppercase Android, lowercase iOS hex, mixed).
 _DEVICE_MAPPING_LINE_RE = re.compile(
-    r'^\s*10\.\d{1,3}\.\d{1,3}\.\d{1,3}\s*,\s*[A-Z][A-Z0-9]{6,}\s*$',
+    r'^\s*(10\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*,\s*([0-9a-zA-Z]{6,})\s*$',
     re.MULTILINE,
 )
 
@@ -191,21 +192,22 @@ def classify_local(text: str, thread_history: list[dict] | None = None) -> Optio
     # ── 3. Device mapping list ("10.x.x.x,SERIAL" per line) → device_check ──────
     # When the message is a host,device mapping list, always treat it as a
     # connectivity check — never as device_down (which requires approval).
-    mapping_lines = _DEVICE_MAPPING_LINE_RE.findall(clean)
-    if len(mapping_lines) >= 2:
-        devices = _extract_devices(clean)
-        hosts   = [d for d in devices if d.startswith("10.")]
-        udids   = [d for d in devices if not d.startswith("10.")]
-        region  = _detect_region(hosts, clean)
+    # findall returns (host, serial) tuples because the regex has two capture groups.
+    mapping_pairs = _DEVICE_MAPPING_LINE_RE.findall(clean)
+    if len(mapping_pairs) >= 2:
+        # Use captured pairs directly — preserves exact order and avoids IP deduplication
+        hosts = [p[0] for p in mapping_pairs]
+        udids = [p[1] for p in mapping_pairs]
+        region = _detect_region(hosts, clean)
         return {
             "intent": "device_check",
             "confidence": 0.88,
             "params": {
-                "host":  hosts[0] if hosts else "",
-                "udid":  udids[0] if udids else "",
+                "host":  hosts[0],
+                "udid":  udids[0],
                 "hosts": hosts,
                 "udids": udids,
-                "devices": devices,
+                "devices": [v for pair in mapping_pairs for v in pair],
                 "region": region,
                 "host_type": None,
                 "title": "", "issue_type": "Task", "assignee": "",
