@@ -23,6 +23,10 @@ from bot.approval.approval_manager import approval_manager
 from bot.formatters.slack_formatter import SlackFormatter
 from bot.memory.redis_client import get_redis
 from config import settings
+from utils.activity_log import (
+    get_claude_calls, get_user_requests, get_bot_sessions,
+    get_claude_stats, get_user_stats,
+)
 from utils.device_name import get_device_name
 from utils.logger import get_logger
 
@@ -181,6 +185,113 @@ def _handle_faulty_count(respond) -> None:  # noqa: ANN001
         respond(f":x: DB query failed: `{type(exc).__name__}: {exc}`")
 
 
+def _handle_logs(args: list[str], respond) -> None:  # noqa: ANN001
+    """Show recent activity logs: /infra logs [claude|users|sessions] [last=Nh]"""
+    subtype = args[0].lower() if args else "claude"
+    hours = 24.0
+    for a in args:
+        if a.startswith("last="):
+            m = re.match(r"(\d+)([hd]?)", a.split("=", 1)[1])
+            if m:
+                n, unit = int(m.group(1)), m.group(2)
+                hours = float(n * 24 if unit == "d" else n)
+
+    ts_fmt = lambda ts: time.strftime("%m/%d %H:%M:%S", time.localtime(ts))  # noqa: E731
+
+    if subtype == "claude":
+        stats = get_claude_stats(hours)
+        calls = get_claude_calls(hours, limit=20)
+        ok_pct = int(stats["ok"] / stats["total"] * 100) if stats["total"] else 0
+        header = (
+            f":robot_face: *Claude CLI Activity* (last {int(hours)}h)\n"
+            f"*Total:* {stats['total']}  •  "
+            f":white_check_mark: {stats['ok']} ({ok_pct}%)  •  "
+            f":x: {stats['fail']}  •  "
+            f"*Avg:* {stats['avg_ms']}ms\n"
+            f"*Breakdown:* classify={stats['classify']}  direct={stats['direct']}  rca={stats['rca']}"
+        )
+        blocks: list[dict] = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+            {"type": "divider"},
+        ]
+        for c in calls[:15]:
+            icon = ":white_check_mark:" if c.get("success") else ":x:"
+            action = c.get("action", "?")
+            intent = f" → `{c['intent']}`" if c.get("intent") else ""
+            dur = c.get("duration_ms", 0)
+            err = f"\n_Error: {c['error'][:80]}_" if c.get("error") else ""
+            preview = c.get("response_preview", "")[:80].replace("\n", " ")
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"{icon} `{ts_fmt(c['ts'])}` `{action}`{intent} "
+                        f"_{dur}ms_\n> {preview}{err}"
+                    ),
+                },
+            })
+        respond(blocks=blocks, text="Claude CLI logs")
+
+    elif subtype in ("users", "requests"):
+        stats = get_user_stats(hours)
+        reqs = get_user_requests(hours, limit=20)
+        source_str = "  ".join(f"{k}={v}" for k, v in stats["by_source"].items())
+        intent_str = "  ".join(
+            f"`{k}`={v}" for k, v in
+            sorted(stats["by_intent"].items(), key=lambda x: -x[1])[:6]
+        )
+        header = (
+            f":speech_balloon: *User Requests* (last {int(hours)}h)\n"
+            f"*Total:* {stats['total']}  •  *Unique users:* {stats['unique_users']}\n"
+            f"*Sources:* {source_str}\n"
+            f"*Top intents:* {intent_str}"
+        )
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+            {"type": "divider"},
+        ]
+        for r in reqs[:15]:
+            src_icon = {"local": ":zap:", "claude": ":robot_face:", "gemini": ":sparkles:"}.get(
+                r.get("source", ""), ":grey_question:"
+            )
+            conf = int(r.get("confidence", 0) * 100)
+            preview = r.get("text_preview", "")[:80].replace("\n", " ")
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"{src_icon} `{ts_fmt(r['ts'])}` <@{r.get('user_id','')}> "
+                        f"→ `{r.get('intent','?')}` ({conf}%)\n> {preview}"
+                    ),
+                },
+            })
+        respond(blocks=blocks, text="User request logs")
+
+    elif subtype == "sessions":
+        sessions = get_bot_sessions(hours=72, limit=30)
+        lines = [f":electric_plug: *Bot Sessions* (last 72h) — {len(sessions)} events\n"]
+        for s in sessions[:25]:
+            ev = s.get("event", "?")
+            icon = {
+                "start": ":rocket:", "stop": ":octagonal_sign:",
+                "connected": ":green_circle:", "disconnected": ":red_circle:",
+            }.get(ev, ":grey_question:")
+            sid = s.get("session_id", "")
+            sid_str = f" `{sid[:12]}…`" if sid else ""
+            lines.append(f"{icon} `{ts_fmt(s['ts'])}` *{ev}*{sid_str} PID={s.get('pid','?')}")
+        respond(text="\n".join(lines))
+
+    else:
+        respond(
+            ":robot_face: *Usage:* `/infra logs [claude|users|sessions] [last=Nh]`\n"
+            "• `claude` — Claude CLI call history & stats\n"
+            "• `users` — inbound user requests & intents\n"
+            "• `sessions` — bot process & Slack socket events"
+        )
+
+
 def register_slash_listeners(app: App) -> None:
     @app.command("/infra")
     def handle_infra(ack, body, respond) -> None:  # noqa: ANN001
@@ -200,11 +311,14 @@ def register_slash_listeners(app: App) -> None:
             _handle_history(args, channel, respond)
         elif subcommand == "faulty" and args and args[0] == "count":
             _handle_faulty_count(respond)
+        elif subcommand == "logs":
+            _handle_logs(args, respond)
         else:
             respond(
                 ":robot_face: *Infra-Bot slash commands:*\n"
                 "\u2022 `/infra status <ip_or_udid>` \u2014 live device health\n"
                 "\u2022 `/infra pending` \u2014 list pending approvals\n"
                 "\u2022 `/infra history device=<id> last=24h` \u2014 action history with Replay\n"
-                "\u2022 `/infra faulty count` \u2014 count offline/faulty devices from DB"
+                "\u2022 `/infra faulty count` \u2014 count offline/faulty devices from DB\n"
+                "\u2022 `/infra logs [claude|users|sessions] [last=Nh]` \u2014 activity logs & stats"
             )

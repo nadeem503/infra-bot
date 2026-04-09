@@ -13,6 +13,7 @@ from bot.listeners.action_listener import register_action_listeners
 from bot.listeners.slash_listener import register_slash_listeners
 from bot.listeners.reaction_listener import register_reaction_listeners
 from bot.listeners.home_tab_listener import register_home_tab_listener
+from utils.activity_log import log_bot_session
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,6 +35,7 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger.info("Starting Infra-Bot...")
+    log_bot_session("start")
 
     app = create_app()
     handler = SocketModeHandler(app, settings.SLACK_APP_TOKEN)

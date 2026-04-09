@@ -17,6 +17,7 @@ from google import genai
 from google.genai import types
 
 from config import settings
+from utils.activity_log import log_claude_call, log_bot_session
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -141,7 +142,7 @@ Use :rotating_light: for network/rack-level incidents.
 """
 
 
-def _call_claude_cli(prompt: str, timeout: int = 30) -> str:
+def _call_claude_cli(prompt: str, timeout: int = 30, _log_action: str = "") -> str:
     """Run claude -p <prompt> as subprocess. Returns stdout text or raises."""
     import os
     _ensure_keychain_unlocked()
@@ -151,14 +152,26 @@ def _call_claude_cli(prompt: str, timeout: int = 30) -> str:
         "USER": os.environ.get("USER", "ltadmin"),
         "LOGNAME": os.environ.get("LOGNAME", "ltadmin"),
     }
-    result = subprocess.run(
-        [_CLAUDE_BIN, "-p", prompt],
-        capture_output=True, text=True, timeout=timeout, env=env,
-    )
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(f"claude CLI exited {result.returncode}: {err[:200]}")
-    return result.stdout.strip()
+    t0 = time.time()
+    try:
+        result = subprocess.run(
+            [_CLAUDE_BIN, "-p", prompt],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+        duration = int((time.time() - t0) * 1000)
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            log_claude_call(prompt[:120], "", duration, False,
+                            action=_log_action, error=err[:200])
+            raise RuntimeError(f"claude CLI exited {result.returncode}: {err[:200]}")
+        output = result.stdout.strip()
+        log_claude_call(prompt[:120], output[:200], duration, True, action=_log_action)
+        return output
+    except subprocess.TimeoutExpired:
+        duration = int((time.time() - t0) * 1000)
+        log_claude_call(prompt[:120], "", duration, False,
+                        action=_log_action, error="timeout")
+        raise
 
 
 class AIBrain:
@@ -245,7 +258,7 @@ class AIBrain:
                 f"Message: {text}\n\n"
                 f"Reply with ONLY valid JSON."
             )
-            raw = _call_claude_cli(prompt, timeout=30)
+            raw = _call_claude_cli(prompt, timeout=30, _log_action="router")
 
             # Extract JSON from response
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
@@ -261,18 +274,25 @@ class AIBrain:
                             "intent": "_direct_reply",
                             "confidence": 1.0,
                             "params": {"reply": reply},
+                            "_source": "claude",
                         }
+                        log_claude_call(prompt[:120], reply[:200], 0, True,
+                                        action="direct", intent="_direct_reply")
                         logger.info("Claude CLI direct reply (len=%d)", len(reply))
                         self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
                         return result
 
                 elif action == "classify":
                     # Claude classified — return as standard classification dict
+                    intent_val = parsed.get("intent", "unknown")
                     result = {
-                        "intent": parsed.get("intent", "unknown"),
+                        "intent": intent_val,
                         "confidence": parsed.get("confidence", 0.7),
                         "params": parsed.get("params", {}),
+                        "_source": "claude",
                     }
+                    log_claude_call(prompt[:120], raw[:200], 0, True,
+                                    action="classify", intent=intent_val)
                     logger.info("Claude CLI classified: intent=%s confidence=%.2f",
                                 result["intent"], result["confidence"])
                     self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
@@ -330,7 +350,7 @@ class AIBrain:
         # ── Claude CLI ────────────────────────────────────────────────────────
         try:
             prompt = f"{ROOT_CAUSE_SYSTEM}\n\nSignals:\n{signals_text}"
-            result = _call_claude_cli(prompt, timeout=30)
+            result = _call_claude_cli(prompt, timeout=30, _log_action="rca")
             if result:
                 self._cache_set(cache_key, result, _ROOT_CAUSE_CACHE_TTL)
                 return result

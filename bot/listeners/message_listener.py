@@ -29,6 +29,7 @@ from bot.analyzers.root_cause_analyzer import (
     add_signal, already_analyzed, mark_analyzed, should_correlate, format_signals_for_claude,
 )
 from bot.nlp.claude_brain import brain, _jira_created_reply, _jira_assigned_reply, _unclear_reply, _invite_reply
+from utils.activity_log import log_user_request
 from bot.nlp.local_classifier import classify_local
 from bot.actions.jira_client import (
     create_issue, assign_issue, transition_issue,
@@ -497,6 +498,7 @@ def register_message_listeners(app: App) -> None:
         confidence = classification.get("confidence", 0.0)
 
         logger.info("Classified [%s]: intent=%s confidence=%.2f", source, intent, confidence)
+        log_user_request(user_id, channel, classify_text[:150], intent, confidence, source)
 
         # --- Quota exceeded — surface friendly message instead of crashing ---
         if intent == "_quota_exceeded":
