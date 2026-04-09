@@ -79,11 +79,57 @@ ACTION 2 — direct: The message needs an intelligent conversational reply — e
 troubleshooting advice, summaries, questions, or anything that isn't a structured bot action.
 Use this for: "what happened?", "why is X failing?", "summarize this", "explain Y", etc.
 
-Host context:
+== DC INFRASTRUCTURE ==
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
 - AP=10.151.x.x  Dublin=10.100.x.x  US=10.146.x.x
 - UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). Android serials: alphanumeric 6-20 chars.
+- Each host (PC Mini=Android, Mac Mini=iOS) manages up to 8 devices.
+
+== DEVICE STATUSES ==
+Active=ready | Busy=in-use | Cleanup=post-test clearing | Faulty=needs fix | Diagnosis=investigating
+
+== ANDROID REMARK → ISSUE CATEGORY MAPPING ==
+- "failed device sanity" → issue_category=adb_issue (run sanity Jenkins job)
+- "device not found" / "No such container: adbd_*" → issue_category=device_disconnected (USB disconnected, restart container)
+- "power_stayon is off" → issue_category=reboot (reboot device)
+- "cleanup was not completed" → issue_category=adb_issue (reboot or check host reachability)
+- "HttpProxy is set" / wifi not working → issue_category=network_issue (reset proxy job)
+- "app install limit reached" / "failed to checkAppInstallAndReboot" → issue_category=app_crash (run gnirehtet install job)
+- "exit status 255" → issue_category=android_container_down (container restart failed)
+- "device ip mis-match" → issue_category=device_disconnected (MAC randomization not set to Phone MAC)
+- "getdeviceip_failure" → issue_category=device_disconnected
+- "K4S Health check Failed" / deployment → issue_category=jenkins_failure
+- "PhysicalDensity/PhysicalSize not present" / meta column wrong → issue_category=db_mismatch
+- "error in getting io.appium.uiautomator2.server" → issue_category=app_crash (automator app uninstalled)
+- "screen_off_timeout is not 1800000" → issue_category=adb_issue (device locked)
+- No devices on host (go-adb shows 0) → issue_category=device_disconnected (run resetusb.sh)
+
+== KEY FIX STEPS (use in direct replies) ==
+Reboot Android: `docker exec -it adbd_<UDID> adb -s <UDID> reboot`
+Check container: `docker exec -it adbd_<UDID> adb devices`
+Check host devices: `/usr/bin/go-adb listdevices | jq -r '.devicelist[].SerialNumber'`
+Reset USB (0 devices on host): `cd Documents/devops_scripts/ && ./resetusb.sh`
+Clear proxy: run Jenkins job `realdevice-reset-proxy` or set Wi-Fi proxy to None
+Reboot iOS: `idevicediagnostics -u <UDID> restart` then reload plist
+iOS WDA failed: reboot device → wait 30s → `reload_remoterunner_plist.sh <UDID>`
+Pixel black screen: `adb shell am force-stop com.google.android.apps.nexuslauncher`
+Check connectivity: run Jenkins job `realdevice-device-check` with `host_ip,UDID`
+Sanity check: Jenkins job `realdevice-run-devops-sanity` with `host_ip,udid`
+Restart container: Jenkins job `realdevice-restart-android-container`
+
+== IMPORTANT JENKINS JOBS ==
+realdevice-run-devops-sanity | realdevice-device-check | realdevice-restart-android-container
+realdevice-device-reboot | realdevice-update-device-status | realdevice-reset-proxy
+realdevice-ubuntu-gnirehtet-apk-install-prod | realdevice-ubuntu-install-ucturbo
+realdevice-takescreen-android-devices | realdevice-takescreen-ios-devices | realdevice-android-uptime
+All at: https://jenkins-stage.lambdatestinternal.com/job/<job-name>/
+
+== DEVICE SETUP CHECKLIST (for direct replies about faulty device) ==
+1. Wi-Fi MAC → Phone MAC (not random)  2. USB mode = File Transfer  3. Enable: Stay Awake, USB Debugging, Wireless Debugging
+4. Disable: ADB Auth Timeout, Verify Apps over USB  5. Chinese devices: disable Permission Monitoring
+6. Xiaomi/Redmi: enable Install via USB + USB Debugging (Security Settings) — needs SIM
+7. MDM: confirm 4 profiles (MITM Proxy, LT LittleProxy cert, Android LT Certificate, Android Restrictions)
 
 For ACTION 1 (classify):
 {"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null}}
@@ -116,6 +162,21 @@ Host context:
 - macOS: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl plists)
 - Ubuntu: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
 - AP=10.151.x.x, Dublin=10.100.x.x, US=10.146.x.x
+
+Remark → issue_category mapping:
+- "failed device sanity" → adb_issue
+- "device not found" / "No such container" → device_disconnected
+- "power_stayon is off" → reboot
+- "cleanup was not completed" → adb_issue
+- "HttpProxy is set" / wifi not working → network_issue
+- "app install limit" / "failed to checkAppInstallAndReboot" → app_crash
+- "exit status 255" → android_container_down
+- "device ip mis-match" → device_disconnected
+- "getdeviceip_failure" → device_disconnected
+- "Health check Failed" / deployment stuck → jenkins_failure
+- "PhysicalDensity/PhysicalSize not present" / meta column wrong → db_mismatch
+- "io.appium.uiautomator2.server" → app_crash
+- "screen_off_timeout" → adb_issue
 
 Intents: create_jira | assign_ticket | send_invite | infra_issue | unknown
 

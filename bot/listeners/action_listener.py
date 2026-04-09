@@ -29,6 +29,9 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 _formatter = SlackFormatter()
 
+# Actions that require a second explicit confirmation before execution
+DOUBLE_APPROVAL_ACTIONS: frozenset[str] = frozenset({"resigner_restart"})
+
 
 def _get_action_handler(action_type: str) -> type[BaseAction] | None:
     from bot.actions.adb_action import ADBAction  # noqa: PLC0415
@@ -235,6 +238,68 @@ def _execute_approved(record, user_id: str, client, channel: str, thread_ts: str
         _run_single(record, user_id, client, channel, thread_ts)
 
 
+def _get_pending_action_ids() -> set[str]:
+    """Return action IDs that are currently in 'pending' status."""
+    return {r.action_id for r in approval_manager.list_pending()}
+
+
+def _is_double_approval_action(action_id: str) -> bool:
+    record = approval_manager.get_action(action_id)
+    return record is not None and record.action_type in DOUBLE_APPROVAL_ACTIONS
+
+
+def _post_second_confirmation(record, channel: str, thread_ts: str, client) -> None:  # noqa: ANN001
+    """Post a second Block Kit card asking for explicit confirmation of a sensitive action."""
+    devices_str = ", ".join(f"`{d}`" for d in record.devices[:5]) or "_no devices listed_"
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f":warning: *Double-confirmation required*\n\n"
+                    f"Action `{record.action_type}` has been approved once.\n"
+                    f"This will *restart Resigner and unlock the keychain* on {devices_str}.\n\n"
+                    f"*Are you sure you want to proceed?*"
+                ),
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "\u26a0\ufe0f Yes, restart Resigner"},
+                    "style": "danger",
+                    "action_id": "confirm_resigner_restart",
+                    "value": record.action_id,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "Final confirmation"},
+                        "text": {"type": "mrkdwn", "text": "This will restart Resigner *and* unlock the macOS keychain. Proceed?"},
+                        "confirm": {"type": "plain_text", "text": "Yes, proceed"},
+                        "deny": {"type": "plain_text", "text": "Cancel"},
+                    },
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "\u274c Cancel"},
+                    "style": "primary",
+                    "action_id": "deny_action",
+                    "value": record.action_id,
+                },
+            ],
+        },
+    ]
+    client.chat_postMessage(
+        channel=channel,
+        thread_ts=thread_ts,
+        blocks=blocks,
+        text=f":warning: Second confirmation required for `{record.action_type}`",
+    )
+    logger.info("Second confirmation card posted for action %s (%s)", record.action_id, record.action_type)
+
+
 def register_action_listeners(app: App) -> None:
     def _common_approve(ack, body, client, label: str) -> None:
         ack()
@@ -253,7 +318,12 @@ def register_action_listeners(app: App) -> None:
             )
             return
 
-        record = approval_manager.approve(action_id, user_id)
+        # Double-approval actions get pre_approved first, then require a second confirm
+        if action_id in _get_pending_action_ids() and _is_double_approval_action(action_id):
+            record = approval_manager.pre_approve(action_id, user_id)
+        else:
+            record = approval_manager.approve(action_id, user_id)
+
         if not record:
             client.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,
@@ -268,6 +338,11 @@ def register_action_listeners(app: App) -> None:
             )
             return
 
+        if record.status == "pre_approved":
+            # Post second confirmation card
+            _post_second_confirmation(record, channel, thread_ts, client)
+            return
+
         _execute_approved(record, user_id, client, channel, thread_ts)
 
     @app.action("approve_action")
@@ -277,6 +352,34 @@ def register_action_listeners(app: App) -> None:
     @app.action("execute_now_action")
     def handle_execute_now(ack, body, client) -> None:  # noqa: ANN001
         _common_approve(ack, body, client, "ExecuteNow")
+
+    @app.action("confirm_resigner_restart")
+    def handle_confirm_resigner(ack, body, client) -> None:  # noqa: ANN001
+        ack()
+        user_id: str = body["user"]["id"]
+        action_id: str = body["actions"][0]["value"]
+        channel: str = body["channel"]["id"]
+        message_ts: str = body["message"]["ts"]
+        thread_ts: str = body["message"].get("thread_ts", message_ts)
+
+        logger.info("confirm_resigner_restart: action_id=%s user=%s", action_id, user_id)
+
+        if user_id != settings.APPROVER_SLACK_ID:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=_formatter.format_unauthorized(user_id),
+            )
+            return
+
+        record = approval_manager.confirm_approve(action_id, user_id)
+        if not record:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=f":warning: Action `{action_id}` not found or not awaiting second confirmation.",
+            )
+            return
+
+        _execute_approved(record, user_id, client, channel, thread_ts)
 
     @app.action("deny_action")
     def handle_deny(ack, body, client) -> None:  # noqa: ANN001

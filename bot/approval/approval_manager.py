@@ -115,9 +115,29 @@ class ApprovalManager:
         logger.info("Action %s approved by %s", action_id, approver_id)
         return record
 
-    def deny(self, action_id: str, denier_id: str) -> Optional[ActionRecord]:
+    def pre_approve(self, action_id: str, approver_id: str) -> Optional[ActionRecord]:
+        """First-step approval for double-approval actions (pending → pre_approved)."""
         record = self._load(action_id)
         if not record or record.status != "pending":
+            return None
+        record.status = "pre_approved"
+        self._save(record)
+        logger.info("Action %s pre-approved by %s (awaiting second confirmation)", action_id, approver_id)
+        return record
+
+    def confirm_approve(self, action_id: str, approver_id: str) -> Optional[ActionRecord]:
+        """Second-step approval for double-approval actions (pre_approved → approved)."""
+        record = self._load(action_id)
+        if not record or record.status != "pre_approved":
+            return None
+        record.status = "approved"
+        self._save(record)
+        logger.info("Action %s confirmed (second approval) by %s", action_id, approver_id)
+        return record
+
+    def deny(self, action_id: str, denier_id: str) -> Optional[ActionRecord]:
+        record = self._load(action_id)
+        if not record or record.status not in ("pending", "pre_approved"):
             return None
         record.status = "denied"
         self._save(record)
