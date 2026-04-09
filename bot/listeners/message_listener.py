@@ -50,6 +50,48 @@ def _is_thin_text(s: str) -> bool:
     return not re.search(r'[a-zA-Z0-9]{3,}', s)
 
 
+# Detects requests that need full thread context regardless of mention text length.
+# e.g. "Summaries the thread", "tldr", "what happened", "explain above"
+_CONTEXT_DEPENDENT_RE = re.compile(
+    r'\b(summar(ize|ise|y|ies)|tldr|tl;dr|what.{0,15}(happened|going on|is this)|'
+    r'explain\b|above|this thread|describe this|recap|overview)\b',
+    re.IGNORECASE,
+)
+
+
+def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str, full: bool = False) -> str:
+    """Fetch Slack thread and return formatted context string.
+
+    full=True  → include ALL non-bot messages (for summarization).
+    full=False → return only the most recent non-bot substantive message.
+    """
+    try:
+        replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
+        messages = replies.get("messages", [])
+        # Exclude the current mention message itself
+        messages = [m for m in messages if m.get("ts") != current_ts]
+
+        if full:
+            parts = []
+            for m in messages:
+                sender = m.get("username") or m.get("user") or m.get("bot_id", "bot")
+                txt = m.get("text", "").strip()
+                if txt:
+                    parts.append(f"[{sender}]: {txt}")
+            return "\n".join(parts)
+        else:
+            # Most recent substantive non-bot message
+            for m in reversed(messages):
+                if m.get("bot_id"):
+                    continue
+                prior = m.get("text", "")
+                if not _is_thin_text(prior):
+                    return prior
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Thread context fetch failed: %s", exc)
+    return ""
+
+
 # Simple greetings handled locally — no Gemini call needed
 _GREETINGS = {"hello", "hi", "hey", "sup", "yo", "howdy", "hiya"}
 _CAPABILITY_TRIGGERS = {"what can you do", "help", "commands", "capabilities", "what do you do"}
@@ -418,26 +460,28 @@ def register_message_listeners(app: App) -> None:
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
         thread_memory.add_message(channel, thread_ts, "user", text)
 
-        # --- Enrich thin mentions with thread context ---
-        # When user types "10.x.x.x,SERIAL check connected" then "@bot 👆" as a
-        # separate message, the app_mention text is just "<@BOT> 👆" — no device info.
-        # Recover context from the most recent prior substantive message in the thread.
+        # --- Enrich with thread context when needed ---
+        # Case 1 (thin mention): user types "👆" or just an emoji after sharing device info.
+        #   → prepend most recent substantive thread message.
+        # Case 2 (context-dependent): "Summaries the thread", "tldr", "explain above", etc.
+        #   → prepend full thread history so Claude can actually summarize/explain it.
         classify_text = text
-        if _is_thin_text(clean):
-            try:
-                replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=20)
-                for msg in reversed(replies.get("messages", [])):
-                    if msg.get("ts") == event.get("ts"):
-                        continue  # skip the current mention message itself
-                    if msg.get("bot_id"):
-                        continue  # skip bot messages
-                    prior = msg.get("text", "")
-                    if not _is_thin_text(prior):
-                        classify_text = prior + " " + text
-                        logger.info("Thin mention enriched with prior thread msg: %.80s", prior)
-                        break
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Thread context fetch failed: %s", exc)
+        is_summarize = bool(_CONTEXT_DEPENDENT_RE.search(clean))
+        if _is_thin_text(clean) or is_summarize:
+            ctx = _build_thread_context(
+                client, channel, thread_ts, event.get("ts", ""),
+                full=is_summarize,
+            )
+            if ctx:
+                if is_summarize:
+                    classify_text = (
+                        f"Thread content to summarize:\n{ctx}\n\n"
+                        f"User request: {text}"
+                    )
+                    logger.info("Summarize request — enriched with full thread (%d chars)", len(ctx))
+                else:
+                    classify_text = ctx + " " + text
+                    logger.info("Thin mention enriched with prior thread msg: %.80s", ctx)
 
         # --- Try local classifier first (no Gemini call) ---
         classification = classify_local(classify_text, thread_history or None)
