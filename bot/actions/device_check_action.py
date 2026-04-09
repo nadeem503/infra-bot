@@ -35,19 +35,19 @@ def _check_single(host: str, udid: str) -> tuple[str, str]:
         all_ps = ssh_exec(host, f"docker ps -a --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
         stopped_status = all_ps["output"].strip()
         if stopped_status:
-            return ":x:", f"container `adbd_{udid}` is *stopped* (`{stopped_status}`)"
-        return ":x:", f"container `adbd_{udid}` does *not exist* on `{host}`"
+            return ":x:", "not connected (container stopped)"
+        return ":x:", "not connected (container missing)"
 
     # Step 2: get device state from inside the container
     gs = ssh_exec(host, f"docker exec -i adbd_{udid} adb -s {udid} get-state 2>&1")
     raw = (gs["output"] or "").strip()
 
     if "error" in raw.lower() or "no devices" in raw.lower() or not raw:
-        return ":x:", f"container running but device not responding (`{raw[:80] or 'no output'}`)"
+        return ":x:", "not connected (device not responding)"
 
     state = raw.splitlines()[-1].strip()  # last line = state word
     icon, label = _STATE_MAP.get(state, (":information_source:", state))
-    return icon, f"{label} — container `{container_status}`"
+    return icon, label
 
 
 class DeviceCheckAction:
