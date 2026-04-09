@@ -143,7 +143,7 @@ All at: https://jenkins-stage.lambdatestinternal.com/job/<job-name>/
 For ACTION 1 (classify):
 {"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":50}}
 
-log_lines: number of log lines to tail. Default 50. Extract from message if user says "last 100 lines", "show 200 lines", "tail 30", etc.
+log_lines: number of log lines to tail. Default 20. Extract from message if user says "last 100 lines", "show 200 lines", "tail 30", etc.
 
 IMPORTANT — all list fields must contain plain strings only, never objects/dicts.
 For device_check: set "host"="10.x.x.x", "udid"="<serial>", "devices":["10.x.x.x","<serial>"].

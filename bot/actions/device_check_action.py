@@ -80,16 +80,23 @@ def _tail_log(host: str, log_path: str, lines: int) -> str:
     return result["output"].strip()
 
 
-def _check_ios(host: str, udid: str, log_lines: int = 50) -> tuple[str, str]:
-    """Check iOS device connectivity via idevice_id + LRR log."""
-    # Step 1: is device listed by idevice_id?
-    connected = ssh_exec(host, f"idevice_id -l | grep -c '{udid}'")
+_IDEVICE_ID = "/opt/homebrew/bin/idevice_id"   # full path — SSH non-interactive sessions skip /opt/homebrew/bin in PATH
+_SLACK_LOG_MAX_CHARS = 2500                       # keep log output inside one Slack message
+
+
+def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
+    """Check iOS device connectivity via idevice_id (full path) + LRR log."""
+    # Step 1: is device listed by idevice_id? Use full path to avoid PATH issues in non-interactive SSH.
+    connected = ssh_exec(host, f"{_IDEVICE_ID} -l 2>/dev/null | grep -c '{udid}'")
     if connected["exit_code"] == -1:
         return ":x:", f"SSH to `{host}` failed: {connected['error'][:100]}"
 
     count = connected["output"].strip()
     log_path = f"{LRR_LOG_DIR}/lamda-remote-runner-{udid}.log"
     log_output = _tail_log(host, log_path, log_lines)
+    # Truncate to fit in one Slack message block
+    if len(log_output) > _SLACK_LOG_MAX_CHARS:
+        log_output = "..." + log_output[-_SLACK_LOG_MAX_CHARS:]
 
     if count != "1":
         return ":x:", f"not connected (idevice_id)\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
