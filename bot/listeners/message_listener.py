@@ -444,9 +444,9 @@ def register_message_listeners(app: App) -> None:
         if classification:
             source = "local"
         else:
-            # Local classifier couldn't handle it — fall back to Gemini
+            # Local classifier couldn't handle it — Claude CLI (then Gemini fallback)
             classification = brain.classify(classify_text, thread_history=thread_history or None)
-            source = "gemini"
+            source = classification.get("_source", "claude")
 
         intent = classification.get("intent", "unknown")
         params = classification.get("params", {})
@@ -458,6 +458,14 @@ def register_message_listeners(app: App) -> None:
         if intent == "_quota_exceeded":
             from bot.nlp.claude_brain import _QUOTA_MSG
             say(text=_QUOTA_MSG, thread_ts=thread_ts)
+            return
+
+        # --- Claude direct reply — Claude handled it intelligently, post as-is ---
+        if intent == "_direct_reply":
+            reply = params.get("reply", "")
+            if reply:
+                say(text=reply, thread_ts=thread_ts)
+                thread_memory.add_message(channel, thread_ts, "assistant", reply)
             return
 
         # --- Confidence gating ---
