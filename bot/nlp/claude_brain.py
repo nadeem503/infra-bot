@@ -328,7 +328,7 @@ class AIBrain:
                     config=types.GenerateContentConfig(
                         system_instruction=CLASSIFY_SYSTEM,
                         response_mime_type="application/json",
-                        max_output_tokens=256,
+                        max_output_tokens=1024,
                     ),
                 )
                 return json.loads(resp.text)
