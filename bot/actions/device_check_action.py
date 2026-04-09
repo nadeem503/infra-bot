@@ -74,7 +74,13 @@ def _resolve_host_type(host: str, udid: str) -> str:
 
 # ── iOS / macOS check ─────────────────────────────────────────────────────────
 
-def _check_ios(host: str, udid: str) -> tuple[str, str]:
+def _tail_log(host: str, log_path: str, lines: int) -> str:
+    """SSH tail a log file, return output text."""
+    result = ssh_exec(host, f"tail -{lines} '{log_path}' 2>/dev/null || echo 'log not found'")
+    return result["output"].strip()
+
+
+def _check_ios(host: str, udid: str, log_lines: int = 50) -> tuple[str, str]:
     """Check iOS device connectivity via idevice_id + LRR log."""
     # Step 1: is device listed by idevice_id?
     connected = ssh_exec(host, f"idevice_id -l | grep -c '{udid}'")
@@ -82,23 +88,17 @@ def _check_ios(host: str, udid: str) -> tuple[str, str]:
         return ":x:", f"SSH to `{host}` failed: {connected['error'][:100]}"
 
     count = connected["output"].strip()
-    if count != "1":
-        # Device not visible — grab last LRR log line for clue
-        log_path = f"{LRR_LOG_DIR}/lamda-remote-runner-{udid}.log"
-        tail = ssh_exec(host, f"tail -5 '{log_path}' 2>/dev/null || echo 'log not found'")
-        last_line = (tail["output"].strip().splitlines() or [""])[-1][:120]
-        return ":x:", f"not connected (idevice_id) — LRR: `{last_line}`"
-
-    # Step 2: device is connected — grab last meaningful LRR log line
     log_path = f"{LRR_LOG_DIR}/lamda-remote-runner-{udid}.log"
-    tail = ssh_exec(host, f"tail -3 '{log_path}' 2>/dev/null || echo 'log not found'")
-    last_line = (tail["output"].strip().splitlines() or [""])[-1][:120]
+    log_output = _tail_log(host, log_path, log_lines)
 
-    # Flag errors in log even if device is connected
-    if any(w in last_line.lower() for w in ("error", "fail", "crash", "fatal", "exception")):
-        return ":warning:", f"connected but LRR error: `{last_line}`"
+    if count != "1":
+        return ":x:", f"not connected (idevice_id)\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
 
-    return ":white_check_mark:", "connected"
+    # Device connected — show log, flag errors
+    if any(w in log_output.lower() for w in ("error", "fail", "crash", "fatal", "exception")):
+        return ":warning:", f"connected but LRR errors detected\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
+
+    return ":white_check_mark:", f"connected\n*LRR log (last {log_lines} lines):*\n```{log_output}```"
 
 
 # ── Android / Ubuntu check ────────────────────────────────────────────────────
@@ -132,13 +132,13 @@ def _check_android(host: str, udid: str) -> tuple[str, str]:
 
 # ── Unified entry point ───────────────────────────────────────────────────────
 
-def _check_single(host: str, udid: str) -> tuple[str, str]:
+def _check_single(host: str, udid: str, log_lines: int = 50) -> tuple[str, str]:
     """Detect host type then run the correct check."""
     host_type = _resolve_host_type(host, udid)
-    logger.info("device_check host=%s udid=%s host_type=%s", host, udid, host_type)
+    logger.info("device_check host=%s udid=%s host_type=%s log_lines=%d", host, udid, host_type, log_lines)
 
     if host_type == "macos":
-        return _check_ios(host, udid)
+        return _check_ios(host, udid, log_lines=log_lines)
     else:
         return _check_android(host, udid)
 
@@ -147,29 +147,37 @@ class DeviceCheckAction:
     """Runs connectivity check on a host and returns a Slack-ready reply.
 
     Automatically uses the correct check method based on host OS:
-    - macOS  → idevice_id + LRR log  (iOS devices)
-    - Ubuntu → Docker + ADB          (Android devices)
+    - macOS  → idevice_id + LRR log (log_lines lines, default 50)
+    - Ubuntu → Docker + ADB
     """
 
-    def execute(self, host: str, udid: str = "", hosts: list | None = None, udids: list | None = None) -> str:
+    def execute(
+        self,
+        host: str,
+        udid: str = "",
+        hosts: list | None = None,
+        udids: list | None = None,
+        log_lines: int = 50,
+    ) -> str:
         """Check device connectivity.
 
+        log_lines: number of log lines to tail (default 50, user can request more/less).
         Multi-pair mode when hosts list has >1 entry.
         Single mode for direct host+udid queries.
         """
         if hosts and len(hosts) > 1:
-            return self._execute_multi(hosts, udids or [])
+            return self._execute_multi(hosts, udids or [], log_lines=log_lines)
 
         if not host:
             return ":warning: No host IP found. Try: `@infra-bot 10.151.2.22,S499NNSGU8GUW8O7 check if connected`"
         if not udid:
             return ":warning: No device UDID/serial found. Try: `@infra-bot 10.151.2.22,S499NNSGU8GUW8O7 check if connected`"
 
-        icon, status = _check_single(host, udid)
+        icon, status = _check_single(host, udid, log_lines=log_lines)
         logger.info("device_check host=%s udid=%s status=%s", host, udid, status)
         return f"{icon} *Device `{udid}`* on `{host}` — {status}"
 
-    def _execute_multi(self, hosts: list, udids: list) -> str:
+    def _execute_multi(self, hosts: list, udids: list, log_lines: int = 50) -> str:
         """Check connectivity for multiple host,udid pairs."""
         pairs = list(zip(hosts, udids))[:50]
         lines = [":mag: *Device connectivity check*\n"]
@@ -179,7 +187,7 @@ class DeviceCheckAction:
             if not serial:
                 lines.append(f":warning: `{host_ip}` — no UDID, skipped")
                 continue
-            icon, status = _check_single(host_ip, serial)
+            icon, status = _check_single(host_ip, serial, log_lines=log_lines)
             lines.append(f"{icon} `{host_ip}` / `{serial}` — {status}")
             if icon == ":white_check_mark:":
                 ok += 1

@@ -645,6 +645,7 @@ def register_message_listeners(app: App) -> None:
             udid = params.get("udid", "") or ""
             hosts = params.get("hosts") or []
             udids = params.get("udids") or []
+            log_lines = int(params.get("log_lines") or 50)
             # Flatten: Claude sometimes returns dicts inside devices/hosts/udids lists
             def _flat_str(v) -> str:  # noqa: ANN001
                 if isinstance(v, str):
@@ -659,7 +660,7 @@ def register_message_listeners(app: App) -> None:
                 devices_list = [_flat_str(d) for d in params.get("devices", []) if d]
                 host = next((d for d in devices_list if isinstance(d, str) and d.startswith("10.")), "")
                 udid = udid or next((d for d in devices_list if isinstance(d, str) and not d.startswith("10.")), "")
-            bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids)
+            bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids, log_lines=log_lines)
             say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "create_jira":
