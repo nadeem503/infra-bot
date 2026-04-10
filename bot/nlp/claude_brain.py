@@ -79,6 +79,18 @@ ACTION 2 — direct: The message needs an intelligent conversational reply — e
 troubleshooting advice, summaries, questions, or anything that isn't a structured bot action.
 Use this for: "what happened?", "why is X failing?", "summarize this", "explain Y", etc.
 
+== PRIORITY RULES (override everything else) ==
+1. JIRA CREATION: If the user says anything like "create a ticket", "create jira", "make a task",
+   "open an issue", "raise a ticket", "file a ticket", "log a ticket" — ALWAYS classify as
+   create_jira, no matter what device/host context exists in the thread.
+   - Strip bot @mentions from title (remove <@Uxxxxxxx> patterns).
+   - If no explicit title given, synthesize one from thread context: use device UDID, host IP,
+     and issue type. Example: "iOS Device 00008120-001E10A61192201E on 10.151.0.110 — LRR not healthy".
+   - If user says "mark as done" / "close it" alongside create, still create_jira (ignore the done part).
+2. DEVICE CHECK: If the user says "check", "check now", "is it connected", "check device" —
+   classify as device_check using host/udid from thread context.
+   - NEVER classify a Jira creation request as device_check, even in device-heavy threads.
+
 == DC INFRASTRUCTURE ==
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
@@ -141,7 +153,7 @@ All at: https://jenkins-stage.lambdatestinternal.com/job/<job-name>/
 7. MDM: confirm 4 profiles (MITM Proxy, LT LittleProxy cert, Android LT Certificate, Android Restrictions)
 
 For ACTION 1 (classify):
-{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":50}}
+{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":20}}
 
 log_lines: number of log lines to tail. Default 20. Extract from message if user says "last 100 lines", "show 200 lines", "tail 30", etc.
 
@@ -556,16 +568,18 @@ def _jira_created_reply(result: dict) -> str:
     if not result.get("success"):
         err = result.get("error", "unknown error")
         return f":x: Failed to create Jira ticket — {err}"
-    key  = result.get("key", "?")
-    url  = result.get("url", "")
+    # jira_client returns ticket_key; support both field names
+    key   = result.get("ticket_key") or result.get("key") or "?"
+    url   = result.get("url", "")
     title = result.get("title", "")
-    assignee = result.get("assignee_id", "")
-    link = f"<{url}|{key}>" if url else key
+    link  = f"<{url}|{key}>" if url else key
     reply = f"Done :white_check_mark: Created {link}"
     if title:
         reply += f" — _{title}_"
-    if assignee:
-        reply += f"\nAssigned to <@{assignee}>"
+    # Only show assignee if it looks like a Slack user ID (starts with U, 9-11 chars)
+    slack_assignee = result.get("slack_assignee_id", "")
+    if slack_assignee and slack_assignee.startswith("U") and 8 <= len(slack_assignee) <= 12:
+        reply += f"\nAssigned to <@{slack_assignee}>"
     return reply
 
 

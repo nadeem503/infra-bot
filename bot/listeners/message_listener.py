@@ -333,6 +333,10 @@ def _exec_create_jira(params: dict, slack_client=None) -> dict:
     # Carry through extra display fields
     result["cc"] = params.get("cc", []) or []
     result["issue_type"] = params.get("issue_type", "Task")
+    # Pass the original Slack user ID separately so _jira_created_reply can format it safely
+    raw_assignee = params.get("assignee", "")
+    if raw_assignee and raw_assignee.startswith("U") and 8 <= len(raw_assignee) <= 12:
+        result["slack_assignee_id"] = raw_assignee
     return result
 
 
@@ -621,37 +625,11 @@ def register_message_listeners(app: App) -> None:
         # Strip Slack formatting before classification so regex/Claude see clean text
         classify_text = _clean_slack_text(classify_text)
 
-        # ── Pre-classifier: intercept explicit Jira creation requests ──────────
-        # Catches "create a ticket", "create jira", "make a task", "open a ticket", etc.
-        # Thread context with device info causes Claude to misclassify these as device_check.
-        # Only the user's raw text is checked (not the thread-enriched classify_text).
-        _JIRA_CREATE_RE = re.compile(
-            r'\b(create|make|open|file|raise|log)\b.{0,40}\b(jira|ticket|task|issue)\b',
-            re.IGNORECASE,
-        )
-        if _JIRA_CREATE_RE.search(text):
-            # Extract a title from the message (strip command verbs/jira/ticket words)
-            _title_clean = re.sub(
-                r'\b(create|make|open|file|raise|log|a|an|the|jira|ticket|task|issue|for|this|device|fix|please|now)\b',
-                ' ', text, flags=re.IGNORECASE,
-            ).strip()
-            _title_clean = re.sub(r'\s+', ' ', _title_clean).strip(" -,.")
-            jira_title = _title_clean if len(_title_clean) > 5 else text.strip()
-            classification = {
-                "intent": "create_jira",
-                "confidence": 0.95,
-                "params": {"title": jira_title},
-                "_source": "pre_classifier",
-            }
-            logger.info("Pre-classifier: create_jira intent from '%s'", text[:80])
-        else:
-            # ── Main flow: Claude CLI → classify/direct → Gemini fallback ─────
-            #
-            # 1. Claude reads the message and decides:
-            #    a. classify  → Claude provides structured intent + params directly
-            #    b. direct    → Claude replies conversationally (summarize, explain, etc.)
-            # 2. If Claude CLI fails → Gemini fallback directly
-            classification = brain.classify(classify_text, thread_history=thread_history or None)
+        # ── Claude CLI → classify/direct → Gemini fallback ───────────────────
+        # Claude handles all intent detection including create_jira — the router
+        # prompt has explicit priority rules so "create ticket" is never misclassified
+        # as device_check even when thread context contains device data.
+        classification = brain.classify(classify_text, thread_history=thread_history or None)
         source = classification.get("_source", "claude")
 
         intent = classification.get("intent", "unknown")
