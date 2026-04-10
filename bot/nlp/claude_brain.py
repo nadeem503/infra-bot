@@ -218,8 +218,30 @@ Use :rotating_light: for network/rack-level incidents.
 """
 
 
-def _call_claude_cli(prompt: str, timeout: int = 30, _log_action: str = "") -> str:
-    """Run claude -p <prompt> as subprocess. Returns stdout text or raises."""
+_INFRA_BOT_DIR = "/Users/ltadmin/infra-bot"  # working dir so project MCP config is loaded
+
+# Atlassian MCP tools available after OAuth auth
+_ATLASSIAN_MCP_TOOLS = [
+    "mcp__atlassian__createJiraIssue",
+    "mcp__atlassian__getVisibleJiraProjects",
+    "mcp__atlassian__lookupJiraAccountId",
+    "mcp__atlassian__getJiraIssue",
+    "mcp__atlassian__editJiraIssue",
+    "mcp__atlassian__searchJiraIssuesUsingJql",
+]
+
+
+def _call_claude_cli(
+    prompt: str,
+    timeout: int = 30,
+    _log_action: str = "",
+    allowed_tools: list[str] | None = None,
+) -> str:
+    """Run claude -p <prompt> as subprocess. Returns stdout text or raises.
+
+    allowed_tools: list of MCP/tool names to pass via --allowedTools.
+                   If None, no --allowedTools flag is added (default behaviour).
+    """
     import os
     _ensure_keychain_unlocked()
     env = {
@@ -228,11 +250,15 @@ def _call_claude_cli(prompt: str, timeout: int = 30, _log_action: str = "") -> s
         "USER": os.environ.get("USER", "ltadmin"),
         "LOGNAME": os.environ.get("LOGNAME", "ltadmin"),
     }
+    cmd = [_CLAUDE_BIN, "-p", prompt]
+    if allowed_tools:
+        cmd += ["--allowedTools", ",".join(allowed_tools)]
     t0 = time.time()
     try:
         result = subprocess.run(
-            [_CLAUDE_BIN, "-p", prompt],
+            cmd,
             capture_output=True, text=True, timeout=timeout, env=env,
+            cwd=_INFRA_BOT_DIR,
         )
         duration = int((time.time() - t0) * 1000)
         if result.returncode != 0:
@@ -248,6 +274,58 @@ def _call_claude_cli(prompt: str, timeout: int = 30, _log_action: str = "") -> s
         log_claude_call(prompt[:120], "", duration, False,
                         action=_log_action, error="timeout")
         raise
+
+
+def create_jira_via_mcp(
+    title: str,
+    description: str = "",
+    assignee_account_id: str = "642196d2b05b4e3e7dab5355",
+    project_key: str = "TE",
+    priority: str = "Medium",
+) -> dict:
+    """Create a Jira ticket via Atlassian MCP (claude -p + --allowedTools).
+
+    Returns dict with keys: success, key, url, error.
+    Raises RuntimeError if claude CLI is not authenticated with Atlassian MCP.
+    """
+    prompt = (
+        f"Create a Jira issue with these exact details using the mcp__atlassian__createJiraIssue tool:\n"
+        f"- project_key: {project_key}\n"
+        f"- summary: {title}\n"
+        f"- issue_type: Simple Task\n"
+        f"- assignee_id: {assignee_account_id}\n"
+        f"- priority: {priority}\n"
+        f"- description: {description or title}\n"
+        f"- team field customfield_10001: b79a27b6-de36-4381-8d60-0b0c3e6477a7\n\n"
+        f"After creating, reply with ONLY a JSON object: "
+        f'{{\"key\": \"TE-XXX\", \"url\": \"https://lambdatest.atlassian.net/browse/TE-XXX\", \"success\": true}}'
+    )
+    try:
+        raw = _call_claude_cli(
+            prompt,
+            timeout=60,
+            _log_action="jira_mcp_create",
+            allowed_tools=_ATLASSIAN_MCP_TOOLS,
+        )
+        # Extract JSON from response
+        json_match = re.search(r'\{[^{}]*"key"[^{}]*\}', raw, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            if data.get("key"):
+                key = data["key"]
+                url = data.get("url", f"https://lambdatest.atlassian.net/browse/{key}")
+                return {"success": True, "key": key, "url": url}
+        # If no JSON, check for error signals
+        if "not logged in" in raw.lower() or "please run /login" in raw.lower():
+            raise RuntimeError("Atlassian MCP not authenticated — run `claude` interactively and authenticate via /mcp")
+        logger.warning("create_jira_via_mcp unexpected output: %s", raw[:200])
+        return {"success": False, "error": f"Unexpected response: {raw[:150]}"}
+    except RuntimeError:
+        raise
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Timed out waiting for Jira ticket creation"}
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": str(exc)[:200]}
 
 
 class AIBrain:
