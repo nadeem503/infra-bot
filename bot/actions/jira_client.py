@@ -149,6 +149,27 @@ def _jira_account_by_email(email: str) -> Optional[str]:
     return None
 
 
+def get_account_display_name(account_id: str) -> str:
+    """Return the Jira user's displayName for a given accountId.
+
+    Falls back to the account_id string itself if lookup fails.
+    """
+    if not account_id:
+        return ""
+    try:
+        resp = requests.get(
+            f"{JIRA_BASE}/user",
+            params={"accountId": account_id},
+            headers=_jira_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("displayName", account_id)
+    except Exception as exc:
+        logger.warning("JIRA display name lookup failed for %s: %s", account_id, exc)
+    return account_id
+
+
 # ---------------------------------------------------------------------------
 # Core create / transition / completeness
 # ---------------------------------------------------------------------------

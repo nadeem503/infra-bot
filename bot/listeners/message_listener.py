@@ -33,6 +33,7 @@ from utils.activity_log import log_user_request
 from bot.actions.jira_client import (
     create_issue, assign_issue, transition_issue,
     resolve_slack_user_to_jira, check_ticket_completeness,
+    get_account_display_name,
 )
 from config import settings
 from utils.device_name import get_device_name
@@ -308,6 +309,10 @@ def _exec_create_jira(params: dict, slack_client=None) -> dict:
     raw_assignee = params.get("assignee", "")
     if raw_assignee and raw_assignee.startswith("U") and 8 <= len(raw_assignee) <= 12:
         result["slack_assignee_id"] = raw_assignee
+    # Resolve Jira account ID → human display name for the blocks card
+    jira_assignee_id = result.get("assignee", "")
+    if jira_assignee_id:
+        result["assignee_name"] = get_account_display_name(jira_assignee_id)
     return result
 
 
@@ -491,10 +496,17 @@ def _format_jira_created_blocks(result: dict) -> list[dict]:
     key = result.get("ticket_key", "?")
     url = result.get("url", f"{JIRA_BROWSE}/{key}")
     title = result.get("title", key)
-    assignee = result.get("assignee", "")
     cc: list[str] = result.get("cc", []) or []
 
-    assignee_line = f"<@{assignee}>" if assignee and assignee.startswith("U") else (assignee or "_unassigned_")
+    # Use resolved display name if available, fall back to Slack mention or raw ID
+    slack_id = result.get("slack_assignee_id", "")
+    assignee_name = result.get("assignee_name", "")
+    if slack_id:
+        assignee_line = f"<@{slack_id}>"
+    elif assignee_name:
+        assignee_line = assignee_name
+    else:
+        assignee_line = "_unassigned_"
     cc_line = " ".join(f"<@{u}>" for u in cc if u) if cc else ""
 
     meta_parts = [f"Project TE  \u00b7  Platform Engineering"]
