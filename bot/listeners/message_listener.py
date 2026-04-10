@@ -551,6 +551,7 @@ def register_message_listeners(app: App) -> None:
         #   including non-@mention corrections (e.g. "use idevice_id not docker") that Redis
         #   never captures because it only stores @mention interactions.
         classify_text = text
+        clean = text.split(">", 1)[-1].strip().lower().rstrip("?! ")
         is_summarize = bool(_CONTEXT_DEPENDENT_RE.search(clean))
         is_thread_reply = thread_ts != event.get("ts", "")  # mentioned inside a thread
 
