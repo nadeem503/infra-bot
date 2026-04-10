@@ -55,8 +55,8 @@ AUTHORIZED_USER_IDS: frozenset[str] = frozenset({
 })
 
 _UNAUTHORIZED_REPLY = (
-    ":no_entry: Sorry, you're not authorized to trigger infra actions.\n"
-    "Please contact <@U04UTG30V9A>, <@U03GPJ43TJT>, or <@U020L115A2X> for assistance."
+    ":robot_face: *Hey there!* I'm still in early access — not fully available to everyone just yet.\n"
+    "I'll be rolling out to the wider team soon. Stay tuned! :rocket:"
 )
 
 def _clean_slack_text(text: str) -> str:
