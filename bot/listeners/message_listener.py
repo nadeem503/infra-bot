@@ -194,35 +194,6 @@ def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str,
 
 
 # Simple greetings handled locally — no Gemini call needed
-_GREETINGS = {"hello", "hi", "hey", "sup", "yo", "howdy", "hiya"}
-_CAPABILITY_TRIGGERS = {"what can you do", "help", "commands", "capabilities", "what do you do"}
-
-_GREETING_REPLY = (
-    "Hey! :wave: I'm Infra-Bot — your DC infrastructure assistant.\n"
-    "I can help with device issues, ADB restarts, reboots, Jira tickets, and more."
-)
-_CAPABILITIES_REPLY = (
-    "*Here's what I can do:*\n\n"
-    "*iOS / macOS hosts:*\n"
-    "• :arrows_counterclockwise: Restart LRR (`lambda_remote_runner`) per device UDID\n"
-    "• :lock: Restart Resigner + unlock keychain (health: port 6789)\n"
-    "• :house: Restart IHM (iOS Host Manager)\n"
-    "• :recycle: Restart LRP (Lambda Remote Provider)\n"
-    "• :mag: Reconciler restart (macOS launchctl)\n\n"
-    "*Android / Ubuntu hosts:*\n"
-    "• :whale: Restart RMDM (Real Device Docker Manager)\n"
-    "• :arrows_counterclockwise: Restart RDTSA (Traffic Service)\n"
-    "• :package: Restart `adbd_<UDID>` Docker container\n"
-    "• :recycle: Restart Reconciler (systemctl)\n\n"
-    "*General:*\n"
-    "• :satellite: Device down, ADB offline, reboot, network, DB mismatch\n"
-    "• :ticket: Create & assign Jira tickets in project TE\n"
-    "• :white_check_mark: Approval workflow with dry-run preview\n"
-    "• :repeat: Dedup alerts (15-min cooldown), circuit breaker, rate limiting\n"
-    "• :mag: Root cause analysis for correlated signals\n"
-    "• :bar_chart: `/infra status|pending|history|faulty count`\n\n"
-    "Just describe the problem: `@infra-bot LRR down on host 10.151.2.50`"
-)
 
 ISSUE_TO_ACTION: dict[str, str] = {
     # Generic device issues
@@ -562,21 +533,6 @@ def register_message_listeners(app: App) -> None:
         user_id = event.get("user", "")
 
         logger.info("@mention from %s in %s", user_id, channel)
-
-        # Strip bot mention prefix for cleaner matching
-        clean = text.split(">", 1)[-1].strip().lower().rstrip("?! ")
-
-        # --- Local greeting / capability handling (no Gemini needed) ---
-        if clean in _GREETINGS:
-            say(text=_GREETING_REPLY, thread_ts=thread_ts)
-            thread_memory.add_message(channel, thread_ts, "user", text)
-            thread_memory.add_message(channel, thread_ts, "assistant", _GREETING_REPLY)
-            return
-        if any(trigger in clean for trigger in _CAPABILITY_TRIGGERS):
-            say(text=_CAPABILITIES_REPLY, thread_ts=thread_ts)
-            thread_memory.add_message(channel, thread_ts, "user", text)
-            thread_memory.add_message(channel, thread_ts, "assistant", _CAPABILITIES_REPLY)
-            return
 
         # --- Authorization check — only allowlisted users may trigger actions ---
         if user_id not in AUTHORIZED_USER_IDS:
