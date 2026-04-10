@@ -42,17 +42,37 @@ def _get_action_handler(action_type: str) -> type[BaseAction] | None:
     from bot.actions.jenkins_action import JenkinsAction  # noqa: PLC0415
     from bot.actions.jira_action import JiraAction  # noqa: PLC0415
     from bot.actions.ssh_action import SSHAction  # noqa: PLC0415
+    from bot.actions.macos_service_action import (  # noqa: PLC0415
+        LRRRestartAction, ResignerRestartAction, IHMRestartAction,
+        ReconcilerRestartAction, LRPRestartAction,
+    )
+    from bot.actions.ubuntu_service_action import (  # noqa: PLC0415
+        RMDMRestartAction, RDTSARestartAction,
+        AndroidContainerRestartAction, AllServicesStatusAction,
+    )
     return {
-        "ssh_reboot": SSHAction,
-        "device_status": DeviceStatusAction,
-        "adb_restart": ADBAction,
-        "adb_logcat": ADBAction,
-        "adb_clear_storage": ADBAction,
-        "db_query": DBAction,
-        "jenkins_trigger": JenkinsAction,
-        "github_workflow": GitHubAction,
-        "jira_ticket": JiraAction,
-        "device_disconnected": DeviceDisconnectedAction,
+        # Generic device actions
+        "ssh_reboot":                SSHAction,
+        "device_status":             DeviceStatusAction,
+        "adb_restart":               ADBAction,
+        "adb_logcat":                ADBAction,
+        "adb_clear_storage":         ADBAction,
+        "db_query":                  DBAction,
+        "jenkins_trigger":           JenkinsAction,
+        "github_workflow":           GitHubAction,
+        "jira_ticket":               JiraAction,
+        "device_disconnected":       DeviceDisconnectedAction,
+        # macOS / iOS service actions
+        "lrr_restart":               LRRRestartAction,
+        "resigner_restart":          ResignerRestartAction,
+        "ihm_restart":               IHMRestartAction,
+        "reconciler_restart":        ReconcilerRestartAction,
+        "lrp_restart":               LRPRestartAction,
+        # Ubuntu / Android service actions
+        "rmdm_restart":              RMDMRestartAction,
+        "rdtsa_restart":             RDTSARestartAction,
+        "android_container_restart": AndroidContainerRestartAction,
+        "host_service_status":       AllServicesStatusAction,
     }.get(action_type)
 
 

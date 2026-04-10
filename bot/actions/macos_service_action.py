@@ -2,232 +2,339 @@
 
 Host user: ltadmin
 Plist dir: /Library/LaunchDaemons/
-Services managed via: launchctl load/unload -w <plist>
+Services managed via: sudo launchctl unload/load -w <plist>
+
+LRR is per-UDID: com.lambda.lambda_remote_runner_<UDID>.plist
+  Reload sequence mirrors the production reload_remoterunner_plist.sh:
+    1. sudo launchctl unload -w <plist>        (unload all first)
+    2. sleep 2
+    3. ideviceinfo -u <udid> → check iOS version ≥ 12.4
+    4. sudo launchctl load -w <plist>          (load if compatible)
 """
 from __future__ import annotations
 
 import re
-from typing import Any
 
+from bot.actions.base_action import BaseAction
+from utils.ssh_exec import ssh_exec as _ssh_exec
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── Service plist paths ───────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 PLIST_BASE = "/Library/LaunchDaemons"
+IDEVICEINFO = "/opt/homebrew/bin/ideviceinfo"
+IDEVICE_ID  = "/opt/homebrew/bin/idevice_id"
 
 PLISTS = {
-    "resigner":    f"{PLIST_BASE}/com.lambda.ios_resigner.plist",
-    "patcher":     f"{PLIST_BASE}/com.lambda.patcher.plist",
-    "ihm":         f"{PLIST_BASE}/com.lambda.ihm.plist",
-    "reconciler":  f"{PLIST_BASE}/com.lambda.reconciler.plist",
-    "lrp":         f"{PLIST_BASE}/com.lambda.lambda_remote_provider.plist",
-    # LRR is per-UDID: com.lambda.lambda_remote_runner_<UDID>.plist
+    "resigner":   f"{PLIST_BASE}/com.lambda.ios_resigner.plist",
+    "patcher":    f"{PLIST_BASE}/com.lambda.patcher.plist",
+    "ihm":        f"{PLIST_BASE}/com.lambda.ihm.plist",
+    "reconciler": f"{PLIST_BASE}/com.lambda.reconciler.plist",
+    "lrp":        f"{PLIST_BASE}/com.lambda.lambda_remote_provider.plist",
 }
 
 RESIGNER_HEALTH_PORT = 6789
 KEYCHAIN_PATH = "/Users/ltadmin/Library/Keychains/login.keychain-db"
+_UDID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{16}$|^[0-9a-fA-F]{40}$')
 
 
-# ── Dry-run previews ──────────────────────────────────────────────────────────
+def _run(host: str, cmd: str) -> tuple[int, str, str]:
+    """Run a command on host, return (exit_code, stdout, stderr)."""
+    r = _ssh_exec(host, cmd)
+    return r["exit_code"], r["output"], r["error"]
 
-class LRRRestartAction:
-    """Restart Lambda Remote Runner for given UDID(s) on a macOS host."""
+
+# ── LRR (Lambda Remote Runner) ────────────────────────────────────────────────
+
+class LRRRestartAction(BaseAction):
+    """Reload Lambda Remote Runner plist(s) on a macOS host.
+
+    Mirrors reload_remoterunner_plist.sh:
+      1. Unload all UDIDs first (launchctl unload)
+      2. sleep 2
+      3. Check iOS version — skip if < 12.4 (CF not compatible)
+      4. Load plist for compatible devices
+    """
 
     action_type = "lrr_restart"
 
-    def dry_run(self, params: dict) -> str:
-        devices = params.get("devices", [])
-        host = params.get("host", "<host_ip>")
-        lines = [f"*Dry-run: LRR restart on `{host}`*"]
-        if devices:
-            for udid in devices:
-                plist = f"{PLIST_BASE}/com.lambda.lambda_remote_runner_{udid}.plist"
-                lines.append(f"1. `launchctl unload -w {plist}`")
-                lines.append(f"2. `sleep 1`")
-                lines.append(f"3. `launchctl load -w {plist}`")
+    def dry_run(self) -> str:
+        host = self.params.get("host", "<host_ip>")
+        udid = self.params.get("udid", "") or ""
+        udids = [udid] if udid else self.params.get("devices", []) or []
+        lines = [f"*Dry-run: LRR reload on `{host}`*"]
+        if udids:
+            for u in udids:
+                plist = f"{PLIST_BASE}/com.lambda.lambda_remote_runner_{u}.plist"
+                lines += [
+                    f"1. `sudo launchctl unload -w {plist}`",
+                    f"2. `sleep 2`",
+                    f"3. Check iOS version via ideviceinfo (skip if < 12.4)",
+                    f"4. `sudo launchctl load -w {plist}`",
+                ]
         else:
-            lines.append("1. `idevice_id -l`  ← discover connected UDIDs")
-            lines.append("2. For each UDID: `launchctl unload/load com.lambda.lambda_remote_runner_<UDID>.plist`")
-        lines.append(f"4. Verify: `launchctl list | grep com.lambda.lambda_remote_runner`")
+            lines += [
+                "1. `idevice_id -l` → discover UDIDs",
+                "2. For each UDID: unload, sleep 2, version check, load",
+            ]
+        lines.append(f"5. `launchctl list | grep lambda_remote_runner`")
         return "\n".join(lines)
 
-    def execute(self, params: dict, ssh_exec) -> dict:
-        devices = params.get("devices", [])
+    def execute(self) -> dict:
+        host = self.params.get("host", "")
+        udid = self.params.get("udid", "") or ""
+
+        # Gather UDIDs: explicit udid param, then devices list, then discover via idevice_id
+        udids: list[str] = []
+        if udid and _UDID_RE.match(udid):
+            udids = [udid]
+        else:
+            raw = self.params.get("devices", []) or []
+            udids = [u for u in raw if isinstance(u, str) and _UDID_RE.match(u)]
+
+        if not udids:
+            rc, out, _ = _run(host, f"{IDEVICE_ID} -l 2>/dev/null")
+            if rc == 0 and out.strip():
+                udids = [u.strip() for u in out.strip().splitlines() if u.strip()]
+                logger.info("LRRRestartAction discovered UDIDs: %s", udids)
+            if not udids:
+                return {"success": False, "message": "No UDIDs found — device not connected?"}
+
         results = []
 
-        # If no UDIDs provided, discover from host
-        if not devices:
-            rc, out, err = ssh_exec("idevice_id -l")
-            if rc == 0 and out.strip():
-                devices = [u.strip() for u in out.strip().splitlines() if u.strip()]
-                logger.info("Discovered UDIDs: %s", devices)
-            else:
-                return {"success": False, "error": "No UDIDs provided and idevice_id -l returned nothing"}
+        # Pass 1: unload all plists first
+        for u in udids:
+            plist = f"{PLIST_BASE}/com.lambda.lambda_remote_runner_{u}.plist"
+            logger.info("LRR unload %s on %s", u, host)
+            _run(host, f"sudo launchctl unload -w '{plist}'")
 
-        for udid in devices:
-            # Sanitize UDID — must be hex or alphanumeric
-            if not re.match(r'^[0-9a-fA-F\-]{8,}$', udid):
-                logger.warning("Skipping suspicious UDID: %s", udid)
+        _run(host, "sleep 2")
+
+        # Pass 2: check version, then load
+        for u in udids:
+            plist = f"{PLIST_BASE}/com.lambda.lambda_remote_runner_{u}.plist"
+
+            # iOS version check
+            rc_v, ver_out, _ = _run(
+                host,
+                f"{IDEVICEINFO} -u {u} 2>/dev/null | grep ProductVersion | awk '{{print $2}}' | cut -c1-4",
+            )
+            version_str = ver_out.strip() if rc_v == 0 else ""
+            try:
+                version = float(version_str) if version_str else 99.0
+            except ValueError:
+                version = 99.0
+
+            if version < 12.4:
+                logger.info("LRR skip load for %s: iOS %.1f < 12.4 (CF not compatible)", u, version)
+                results.append({
+                    "udid": u, "loaded": False,
+                    "note": f"iOS {version_str} < 12.4 — skipped (not CF compatible)",
+                })
                 continue
-            plist = f"{PLIST_BASE}/com.lambda.lambda_remote_runner_{udid}.plist"
-            rc1, _, _ = ssh_exec(f"launchctl unload -w {plist}")
-            ssh_exec("sleep 1")
-            rc2, _, _ = ssh_exec(f"launchctl load -w {plist}")
-            rc3, out3, _ = ssh_exec(f"launchctl list | grep com.lambda.lambda_remote_runner_{udid}")
+
+            logger.info("LRR load %s (iOS %s) on %s", u, version_str, host)
+            rc_load, _, _ = _run(host, f"sudo launchctl load -w '{plist}'")
+            rc_check, list_out, _ = _run(
+                host, f"launchctl list | grep lambda_remote_runner_{u}"
+            )
+            loaded = rc_load == 0 or (rc_check == 0 and u in list_out)
             results.append({
-                "udid": udid,
-                "unload_rc": rc1,
-                "load_rc": rc2,
-                "running": rc3 == 0 and udid in out3,
+                "udid": u, "loaded": loaded,
+                "ios_version": version_str or "unknown",
+                "load_rc": rc_load,
             })
 
-        success = all(r["running"] for r in results)
-        return {"success": success, "results": results, "devices": devices}
+        loaded_count = sum(1 for r in results if r.get("loaded"))
+        total = len(results)
+        success = loaded_count > 0
+        msg = f"LRR reloaded {loaded_count}/{total} devices on `{host}`"
+        if not success:
+            msg = f"LRR reload failed for all devices on `{host}`"
+        return {"success": success, "message": msg, "results": results, "details": {}}
 
 
-class ResignerRestartAction:
+# ── Resigner ──────────────────────────────────────────────────────────────────
+
+class ResignerRestartAction(BaseAction):
     """Restart iOS Resigner service on a macOS host.
 
-    Also unlocks keychain — required for resigner startup.
-    Health check: curl http://HOST:6789/health → "OK"
+    Unlocks keychain before reload — required for resigner startup.
+    Health: curl http://HOST:6789/health → "OK"
     """
 
     action_type = "resigner_restart"
 
-    def dry_run(self, params: dict) -> str:
-        host = params.get("host", "<resigner_host>")
+    def dry_run(self) -> str:
+        host = self.params.get("host", "<host>")
         return (
             f"*Dry-run: Resigner restart on `{host}`*\n"
             f"1. `security unlock-keychain -p <pwd> {KEYCHAIN_PATH}`\n"
-            f"2. `launchctl unload -w {PLISTS['resigner']}`\n"
+            f"2. `sudo launchctl unload -w {PLISTS['resigner']}`\n"
             f"3. `sleep 2`\n"
-            f"4. `launchctl load -w {PLISTS['resigner']}`\n"
-            f"5. `curl http://localhost:{RESIGNER_HEALTH_PORT}/health`  ← should return OK"
+            f"4. `sudo launchctl load -w {PLISTS['resigner']}`\n"
+            f"5. `curl http://localhost:{RESIGNER_HEALTH_PORT}/health`  ← expect OK"
         )
 
-    def execute(self, params: dict, ssh_exec) -> dict:
-        keychain_password = params.get("keychain_password", "")
+    def execute(self) -> dict:
+        from config import settings  # noqa: PLC0415
+        host = self.params.get("host", "")
+        passwd = settings.HOST_PASS or "lambdatest123!"
 
         steps = []
+        rc0, _, _ = _run(host, f"security unlock-keychain -p '{passwd}' '{KEYCHAIN_PATH}'")
+        steps.append({"step": "unlock_keychain", "rc": rc0})
 
-        # Unlock keychain if password provided
-        if keychain_password:
-            rc, _, _ = ssh_exec(
-                f"security unlock-keychain -p {keychain_password} {KEYCHAIN_PATH}"
-            )
-            steps.append({"step": "unlock_keychain", "rc": rc})
-
-        # Unload / load
-        rc1, _, _ = ssh_exec(f"launchctl unload -w {PLISTS['resigner']}")
-        ssh_exec("sleep 2")
-        rc2, _, _ = ssh_exec(f"launchctl load -w {PLISTS['resigner']}")
+        rc1, _, _ = _run(host, f"sudo launchctl unload -w '{PLISTS['resigner']}'")
+        _run(host, "sleep 2")
+        rc2, _, _ = _run(host, f"sudo launchctl load -w '{PLISTS['resigner']}'")
         steps.append({"step": "reload_plist", "unload_rc": rc1, "load_rc": rc2})
 
-        # Health check
-        ssh_exec("sleep 3")
-        rc3, out3, _ = ssh_exec(f"curl -s http://localhost:{RESIGNER_HEALTH_PORT}/health")
+        _run(host, "sleep 3")
+        rc3, out3, _ = _run(host, f"curl -s http://localhost:{RESIGNER_HEALTH_PORT}/health")
         healthy = rc3 == 0 and "OK" in out3
         steps.append({"step": "health_check", "rc": rc3, "response": out3.strip(), "healthy": healthy})
 
-        return {"success": healthy, "steps": steps}
+        return {
+            "success": healthy,
+            "message": f"Resigner {'healthy' if healthy else 'unhealthy'} after restart on `{host}`",
+            "steps": steps,
+            "details": {},
+        }
 
 
-class IHMRestartAction:
-    """Restart iOS Host Manager (IHM) on macOS."""
+# ── IHM (iOS Host Manager) ────────────────────────────────────────────────────
+
+class IHMRestartAction(BaseAction):
+    """Restart iOS Host Manager (IHM) on macOS via launchctl."""
 
     action_type = "ihm_restart"
 
-    def dry_run(self, params: dict) -> str:
+    def dry_run(self) -> str:
+        host = self.params.get("host", "<host>")
         return (
-            f"*Dry-run: IHM restart*\n"
-            f"1. `launchctl unload -w {PLISTS['ihm']}`\n"
-            f"2. `sleep 1`\n"
-            f"3. `launchctl load -w {PLISTS['ihm']}`\n"
+            f"*Dry-run: IHM restart on `{host}`*\n"
+            f"1. `sudo launchctl unload -w {PLISTS['ihm']}`\n"
+            f"2. `sleep 2`\n"
+            f"3. `sudo launchctl load -w {PLISTS['ihm']}`\n"
             f"4. `launchctl list | grep com.lambda.ihm`"
         )
 
-    def execute(self, params: dict, ssh_exec) -> dict:
-        rc1, _, _ = ssh_exec(f"launchctl unload -w {PLISTS['ihm']}")
-        ssh_exec("sleep 1")
-        rc2, _, _ = ssh_exec(f"launchctl load -w {PLISTS['ihm']}")
-        ssh_exec("sleep 2")
-        rc3, out3, _ = ssh_exec("launchctl list | grep com.lambda.ihm")
+    def execute(self) -> dict:
+        host = self.params.get("host", "")
+        rc1, _, _ = _run(host, f"sudo launchctl unload -w '{PLISTS['ihm']}'")
+        _run(host, "sleep 2")
+        rc2, _, _ = _run(host, f"sudo launchctl load -w '{PLISTS['ihm']}'")
+        _run(host, "sleep 2")
+        rc3, out3, _ = _run(host, "launchctl list | grep com.lambda.ihm")
         running = rc3 == 0 and "ihm" in out3
-        return {"success": running, "unload_rc": rc1, "load_rc": rc2, "launchctl_out": out3.strip()}
+        return {
+            "success": running,
+            "message": f"IHM {'running' if running else 'not running'} after restart on `{host}`",
+            "unload_rc": rc1, "load_rc": rc2,
+            "details": {"launchctl_out": out3.strip()},
+        }
 
 
-class ReconcilerRestartAction:
+# ── Reconciler ────────────────────────────────────────────────────────────────
+
+class ReconcilerRestartAction(BaseAction):
     """Restart Reconciler on macOS (launchctl) or Ubuntu (systemctl)."""
 
     action_type = "reconciler_restart"
 
-    def dry_run(self, params: dict) -> str:
-        host_type = params.get("host_type", "macos")
+    def dry_run(self) -> str:
+        host_type = self.params.get("host_type", "macos")
+        host = self.params.get("host", "<host>")
         if host_type == "ubuntu":
             return (
-                "*Dry-run: Reconciler restart (Ubuntu)*\n"
+                f"*Dry-run: Reconciler restart (Ubuntu) on `{host}`*\n"
                 "1. `systemctl restart reconciler`\n"
                 "2. `systemctl status reconciler`"
             )
         return (
-            f"*Dry-run: Reconciler restart (macOS)*\n"
-            f"1. `launchctl unload -w {PLISTS['reconciler']}`\n"
-            f"2. `sleep 1`\n"
-            f"3. `launchctl load -w {PLISTS['reconciler']}`\n"
+            f"*Dry-run: Reconciler restart (macOS) on `{host}`*\n"
+            f"1. `sudo launchctl unload -w {PLISTS['reconciler']}`\n"
+            f"2. `sleep 2`\n"
+            f"3. `sudo launchctl load -w {PLISTS['reconciler']}`\n"
             f"4. `launchctl list | grep com.lambda.reconciler`"
         )
 
-    def execute(self, params: dict, ssh_exec) -> dict:
-        host_type = params.get("host_type", "macos")
+    def execute(self) -> dict:
+        host = self.params.get("host", "")
+        host_type = self.params.get("host_type", "macos")
         if host_type == "ubuntu":
-            rc1, _, _ = ssh_exec("systemctl restart reconciler")
-            ssh_exec("sleep 2")
-            rc2, out2, _ = ssh_exec("systemctl status reconciler --no-pager | head -5")
+            rc1, _, _ = _run(host, "systemctl restart reconciler")
+            _run(host, "sleep 2")
+            rc2, out2, _ = _run(host, "systemctl status reconciler --no-pager | head -5")
             running = rc2 == 0 and "running" in out2
-            return {"success": running, "restart_rc": rc1, "status": out2.strip()}
-        else:
-            rc1, _, _ = ssh_exec(f"launchctl unload -w {PLISTS['reconciler']}")
-            ssh_exec("sleep 1")
-            rc2, _, _ = ssh_exec(f"launchctl load -w {PLISTS['reconciler']}")
-            rc3, out3, _ = ssh_exec("launchctl list | grep com.lambda.reconciler")
-            running = rc3 == 0 and "reconciler" in out3
-            return {"success": running, "unload_rc": rc1, "load_rc": rc2}
+            return {
+                "success": running,
+                "message": f"Reconciler {'running' if running else 'not running'} on `{host}`",
+                "restart_rc": rc1,
+                "details": {"status": out2.strip()},
+            }
+        rc1, _, _ = _run(host, f"sudo launchctl unload -w '{PLISTS['reconciler']}'")
+        _run(host, "sleep 2")
+        rc2, _, _ = _run(host, f"sudo launchctl load -w '{PLISTS['reconciler']}'")
+        rc3, out3, _ = _run(host, "launchctl list | grep com.lambda.reconciler")
+        running = rc3 == 0 and "reconciler" in out3
+        return {
+            "success": running,
+            "message": f"Reconciler {'running' if running else 'not running'} on `{host}`",
+            "unload_rc": rc1, "load_rc": rc2,
+            "details": {},
+        }
 
 
-class LRPRestartAction:
+# ── LRP (Lambda Remote Provider) ──────────────────────────────────────────────
+
+class LRPRestartAction(BaseAction):
     """Restart Lambda Remote Provider on macOS or Ubuntu."""
 
     action_type = "lrp_restart"
 
-    def dry_run(self, params: dict) -> str:
-        host_type = params.get("host_type", "macos")
+    def dry_run(self) -> str:
+        host_type = self.params.get("host_type", "macos")
+        host = self.params.get("host", "<host>")
         if host_type == "ubuntu":
             return (
-                "*Dry-run: LRP restart (Ubuntu)*\n"
+                f"*Dry-run: LRP restart (Ubuntu) on `{host}`*\n"
                 "1. `systemctl restart lambda_remote_provider`\n"
                 "2. `systemctl status lambda_remote_provider`"
             )
         return (
-            f"*Dry-run: LRP restart (macOS)*\n"
-            f"1. `launchctl unload -w {PLISTS['lrp']}`\n"
-            f"2. `sleep 1`\n"
-            f"3. `launchctl load -w {PLISTS['lrp']}`\n"
-            f"4. `launchctl list | grep com.lambda.lambda_remote_provider`"
+            f"*Dry-run: LRP restart (macOS) on `{host}`*\n"
+            f"1. `sudo launchctl unload -w {PLISTS['lrp']}`\n"
+            f"2. `sleep 2`\n"
+            f"3. `sudo launchctl load -w {PLISTS['lrp']}`\n"
+            f"4. `launchctl list | grep lambda_remote_provider`"
         )
 
-    def execute(self, params: dict, ssh_exec) -> dict:
-        host_type = params.get("host_type", "macos")
+    def execute(self) -> dict:
+        host = self.params.get("host", "")
+        host_type = self.params.get("host_type", "macos")
         if host_type == "ubuntu":
-            rc1, _, _ = ssh_exec("systemctl restart lambda_remote_provider")
-            rc2, out2, _ = ssh_exec("systemctl status lambda_remote_provider --no-pager | head -5")
+            rc1, _, _ = _run(host, "systemctl restart lambda_remote_provider")
+            _run(host, "sleep 2")
+            rc2, out2, _ = _run(host, "systemctl status lambda_remote_provider --no-pager | head -5")
             running = rc2 == 0 and "running" in out2
-            return {"success": running, "restart_rc": rc1, "status": out2.strip()}
-        else:
-            rc1, _, _ = ssh_exec(f"launchctl unload -w {PLISTS['lrp']}")
-            ssh_exec("sleep 1")
-            rc2, _, _ = ssh_exec(f"launchctl load -w {PLISTS['lrp']}")
-            rc3, out3, _ = ssh_exec("launchctl list | grep lambda_remote_provider")
-            running = rc3 == 0
-            return {"success": running, "unload_rc": rc1, "load_rc": rc2}
+            return {
+                "success": running,
+                "message": f"LRP {'running' if running else 'not running'} on `{host}`",
+                "restart_rc": rc1,
+                "details": {"status": out2.strip()},
+            }
+        rc1, _, _ = _run(host, f"sudo launchctl unload -w '{PLISTS['lrp']}'")
+        _run(host, "sleep 2")
+        rc2, _, _ = _run(host, f"sudo launchctl load -w '{PLISTS['lrp']}'")
+        rc3, out3, _ = _run(host, "launchctl list | grep lambda_remote_provider")
+        running = rc3 == 0
+        return {
+            "success": running,
+            "message": f"LRP {'running' if running else 'not running'} on `{host}`",
+            "unload_rc": rc1, "load_rc": rc2,
+            "details": {},
+        }
