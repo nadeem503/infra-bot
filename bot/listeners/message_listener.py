@@ -622,23 +622,8 @@ def register_message_listeners(app: App) -> None:
                 thread_memory.add_message(channel, thread_ts, "assistant", reply)
             return
 
-        # --- Confidence gating ---
-        if confidence < CONFIDENCE_THRESHOLD and intent != "unknown":
-            options = brain.clarification_options(text)
-            if options:
-                clarify_id = str(uuid.uuid4())[:8]
-                get_redis().setex(
-                    f"infra:clarify:{clarify_id}",
-                    1800,
-                    json.dumps({
-                        "text": text, "options": options,
-                        "channel": channel, "thread_ts": thread_ts, "user_id": user_id,
-                    }),
-                )
-                blocks = _formatter.format_clarification_card(clarify_id, options)
-                say(blocks=blocks, text="Not sure what you mean — pick one:", thread_ts=thread_ts)
-                thread_memory.add_message(channel, thread_ts, "assistant", "Asked for clarification")
-                return
+        # --- Confidence gating: low-confidence non-unknown intents fall through to
+        # their intent handlers and, if still unresolved, hit the _unclear_reply path. ---
 
         bot_reply: str | None = None
 
@@ -707,8 +692,15 @@ def register_message_listeners(app: App) -> None:
         message_ts: str = body["message"]["ts"]
         thread_ts: str = body["message"].get("thread_ts", message_ts)
 
-        clarify_id, idx_str = value.rsplit(":", 1)
-        idx = int(idx_str)
+        try:
+            clarify_id, idx_str = value.rsplit(":", 1)
+            idx = int(idx_str)
+        except (ValueError, TypeError):
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=":warning: Invalid action format — please try again.",
+            )
+            return
 
         raw = get_redis().get(f"infra:clarify:{clarify_id}")
         if not raw:
@@ -721,7 +713,7 @@ def register_message_listeners(app: App) -> None:
         data = json.loads(raw)
         options = data.get("options", [])
         original_text = data.get("text", "")
-        chosen = options[idx] if idx < len(options) else {}
+        chosen = options[idx] if 0 <= idx < len(options) else {}
         intent = chosen.get("intent", "unknown")
         params = chosen.get("params", {})
 

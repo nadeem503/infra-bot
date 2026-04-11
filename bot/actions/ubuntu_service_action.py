@@ -8,16 +8,10 @@ from __future__ import annotations
 
 import re
 
-from bot.actions.base_action import BaseAction
-from utils.ssh_exec import ssh_exec as _ssh_exec
+from bot.actions.base_action import BaseAction, ssh_run as _run
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def _run(host: str, cmd: str) -> tuple[int, str, str]:
-    r = _ssh_exec(host, cmd)
-    return r["exit_code"], r["output"], r["error"]
 
 
 class RMDMRestartAction(BaseAction):

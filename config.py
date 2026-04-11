@@ -28,9 +28,9 @@ class Settings:
     BASTION_HOST: str = os.getenv("BASTION_HOST", "bastion-stage.lambdatest.com")
     BASTION_USER: str = os.getenv("BASTION_USER", "nadeemk")
     BASTION_KEY_PATH: str = os.getenv("BASTION_KEY_PATH", "")
-    BASTION_PASS: str = os.getenv("BASTION_PASS", "JAHIr@503")
+    BASTION_PASS: str = os.getenv("BASTION_PASS", "")
     HOST_USER: str = os.getenv("HOST_USER", "ltadmin")
-    HOST_PASS: str = os.getenv("HOST_PASS", "lambdatest123!")
+    HOST_PASS: str = os.getenv("HOST_PASS", "")
 
     # Jenkins
     JENKINS_URL: str = os.getenv("JENKINS_URL", "")
@@ -50,7 +50,7 @@ class Settings:
     # Jira
     JIRA_EMAIL: str = os.getenv("JIRA_EMAIL", "")
     JIRA_API_TOKEN: str = os.getenv("JIRA_API_TOKEN", "")
-    JIRA_CLOUD_ID: str = os.getenv("JIRA_CLOUD_ID", "3def4f78-101d-4614-9b65-735c17a98a93")
+    JIRA_CLOUD_ID: str = os.getenv("JIRA_CLOUD_ID", "")  # must be set in .env
     JIRA_ASSIGNEE_ID: str = os.getenv("JIRA_ASSIGNEE_ID", "642196d2b05b4e3e7dab5355")
 
     # Token expiry dates (YYYY-MM-DD) — checked in Home Tab dashboard

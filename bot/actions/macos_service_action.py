@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import re
 
-from bot.actions.base_action import BaseAction
-from utils.ssh_exec import ssh_exec as _ssh_exec
+from bot.actions.base_action import BaseAction, ssh_run as _run
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,12 +37,6 @@ PLISTS = {
 RESIGNER_HEALTH_PORT = 6789
 KEYCHAIN_PATH = "/Users/ltadmin/Library/Keychains/login.keychain-db"
 _UDID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{16}$|^[0-9a-fA-F]{40}$')
-
-
-def _run(host: str, cmd: str) -> tuple[int, str, str]:
-    """Run a command on host, return (exit_code, stdout, stderr)."""
-    r = _ssh_exec(host, cmd)
-    return r["exit_code"], r["output"], r["error"]
 
 
 # ── LRR (Lambda Remote Runner) ────────────────────────────────────────────────
@@ -184,7 +177,8 @@ class ResignerRestartAction(BaseAction):
         passwd = settings.HOST_PASS or "lambdatest123!"
 
         steps = []
-        rc0, _, _ = _run(host, f"security unlock-keychain -p '{passwd}' '{KEYCHAIN_PATH}'")
+        # Pass password via stdin (not -p flag) to avoid exposure in ps aux
+        rc0, _, _ = _run(host, f"echo {__import__('shlex').quote(passwd)} | security unlock-keychain -stdin '{KEYCHAIN_PATH}'")
         steps.append({"step": "unlock_keychain", "rc": rc0})
 
         rc1, _, _ = _run(host, f"sudo launchctl unload -w '{PLISTS['resigner']}'")

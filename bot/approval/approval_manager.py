@@ -49,6 +49,9 @@ def _deserialize(raw: str) -> ActionRecord:
     return ActionRecord(**json.loads(raw))
 
 
+_MAX_WATCHER_THREADS = 50  # prevent unbounded accumulation under high load
+
+
 class ApprovalManager:
     def create_action(
         self,
@@ -101,7 +104,9 @@ class ApprovalManager:
         r = get_redis()
         key = f"{_PREFIX}{record.action_id}"
         ttl = r.ttl(key)
-        r.setex(key, max(ttl, 60), _serialize(record))
+        # ttl > 0: key has expiry — preserve it; ttl <= 0: expired/missing/no-expiry — use default
+        effective_ttl = ttl if ttl > 0 else ACTION_TTL_SECONDS
+        r.setex(key, effective_ttl, _serialize(record))
 
     def get_action(self, action_id: str) -> Optional[ActionRecord]:
         return self._load(action_id)
@@ -180,6 +185,12 @@ class ApprovalManager:
         if not settings.ESCALATION_WAIT_MINUTES:
             return
 
+        # Don't let watcher threads pile up under high load
+        active = sum(1 for t in threading.enumerate() if t.name.startswith("escalation_watcher:"))
+        if active >= _MAX_WATCHER_THREADS:
+            logger.warning("Escalation watcher limit reached (%d) — skipping watcher for %s", active, action_id)
+            return
+
         def _watcher() -> None:
             wait = settings.ESCALATION_WAIT_MINUTES * 60
             time.sleep(wait)
@@ -222,7 +233,7 @@ class ApprovalManager:
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Backup escalation failed: %s", exc)
 
-        threading.Thread(target=_watcher, daemon=True).start()
+        threading.Thread(target=_watcher, daemon=True, name=f"escalation_watcher:{action_id}").start()
 
 
 approval_manager = ApprovalManager()

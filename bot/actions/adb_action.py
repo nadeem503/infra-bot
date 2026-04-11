@@ -38,11 +38,16 @@ class ADBAction(BaseAction):
                 "details": {"allowed": sorted(ALLOWED_ADB_COMMANDS)},
             }
 
-        full_cmd = f"adb -s {shlex.quote(udid)} {command}" if udid else f"adb {command}"
+        # Build arg list (shell=False) to prevent injection via udid or command tokens
+        cmd_parts = shlex.split(command)
+        if udid:
+            adb_argv = ["adb", "-s", udid] + cmd_parts
+        else:
+            adb_argv = ["adb"] + cmd_parts
 
         try:
             result = subprocess.run(
-                full_cmd, shell=True, capture_output=True, text=True, timeout=30
+                adb_argv, shell=False, capture_output=True, text=True, timeout=30
             )
             return {
                 "success": result.returncode == 0,

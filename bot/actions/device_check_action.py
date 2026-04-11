@@ -19,6 +19,7 @@ No approval workflow — read-only diagnostic, returns result directly.
 from __future__ import annotations
 
 import re
+import shlex
 
 from utils.logger import get_logger
 from utils.ssh_exec import ssh_exec
@@ -76,7 +77,7 @@ def _resolve_host_type(host: str, udid: str) -> str:
 
 def _tail_log(host: str, log_path: str, lines: int) -> str:
     """SSH tail a log file, return output text."""
-    result = ssh_exec(host, f"tail -{lines} '{log_path}' 2>/dev/null || echo 'log not found'")
+    result = ssh_exec(host, f"tail -{lines} {shlex.quote(log_path)} 2>/dev/null || echo 'log not found'")
     return result["output"].strip()
 
 
@@ -113,7 +114,7 @@ def _lrr_health_summary(log_output: str) -> str:
 def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
     """Check iOS device connectivity via idevice_id (full path) + LRR log."""
     # Step 1: is device listed by idevice_id? Use full path to avoid PATH issues in non-interactive SSH.
-    connected = ssh_exec(host, f"{_IDEVICE_ID} -l 2>/dev/null | grep -c '{udid}'")
+    connected = ssh_exec(host, f"{_IDEVICE_ID} -l 2>/dev/null | grep -c {shlex.quote(udid)}")
     if connected["exit_code"] == -1:
         return ":x:", f"SSH to `{host}` failed: {connected['error'][:100]}"
 
@@ -154,20 +155,22 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
 def _check_android(host: str, udid: str) -> tuple[str, str]:
     """Check Android device connectivity via Docker + ADB."""
     # Step 1: is the container running?
-    ps = ssh_exec(host, f"docker ps --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
+    quoted_udid = shlex.quote(udid)
+    quoted_container = shlex.quote(f"adbd_{udid}")
+    ps = ssh_exec(host, f"docker ps --filter name={quoted_container} --format '{{{{.Status}}}}'")
     if ps["exit_code"] == -1:
         return ":x:", f"SSH to `{host}` failed: {ps['error'][:100]}"
 
     container_status = (ps["output"].strip().splitlines() or [""])[0]
     if not container_status:
-        all_ps = ssh_exec(host, f"docker ps -a --filter name=adbd_{udid} --format '{{{{.Status}}}}'")
+        all_ps = ssh_exec(host, f"docker ps -a --filter name={quoted_container} --format '{{{{.Status}}}}'")
         stopped_status = all_ps["output"].strip()
         if stopped_status:
             return ":x:", "not connected (container stopped)"
         return ":x:", "not connected (container missing)"
 
     # Step 2: get device state from inside the container
-    gs = ssh_exec(host, f"docker exec -i adbd_{udid} adb -s {udid} get-state 2>&1")
+    gs = ssh_exec(host, f"docker exec -i adbd_{udid} adb -s {quoted_udid} get-state 2>&1")
     raw = (gs["output"] or "").strip()
 
     if "error" in raw.lower() or "no devices" in raw.lower() or not raw:

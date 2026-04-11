@@ -15,7 +15,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_USER = "ltadmin"
-_DEFAULT_PASS = "lambdatest123!"
+_DEFAULT_PASS = ""
 _TIMEOUT = 20
 
 
@@ -23,7 +23,7 @@ def ssh_exec(
     host: str,
     command: str,
     user: str = _DEFAULT_USER,
-    password: str = _DEFAULT_PASS,
+    password: str | None = None,
     timeout: int = _TIMEOUT,
 ) -> dict:
     """Run a command on an internal DC host via direct SSH.
@@ -31,6 +31,9 @@ def ssh_exec(
     Returns:
         {"success": bool, "output": str, "error": str, "exit_code": int}
     """
+    if password is None:
+        from config import settings  # noqa: PLC0415
+        password = settings.HOST_PASS or ""
     sshpass_bin = shutil.which("sshpass") or shutil.which("/opt/homebrew/bin/sshpass")
     if sshpass_bin:
         return _exec_sshpass(host, command, user, password, timeout, sshpass_bin=sshpass_bin)
@@ -88,7 +91,8 @@ def _exec_paramiko(host: str, command: str, user: str, password: str, timeout: i
             allow_agent=False,
             banner_timeout=timeout,
         )
-        _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+        stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+        stdin.close()
         out = stdout.read().decode(errors="replace").strip()
         err = stderr.read().decode(errors="replace").strip()
         code = stdout.channel.recv_exit_status()

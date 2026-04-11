@@ -2,6 +2,13 @@
 import abc
 
 from utils.logger import get_logger, audit_log
+from utils.ssh_exec import ssh_exec as _ssh_exec
+
+
+def ssh_run(host: str, cmd: str) -> tuple[int, str, str]:
+    """Run a command on a remote host via SSH. Returns (exit_code, stdout, stderr)."""
+    r = _ssh_exec(host, cmd)
+    return r["exit_code"], r["output"], r["error"]
 
 
 class BaseAction(abc.ABC):

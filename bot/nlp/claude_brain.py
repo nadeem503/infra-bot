@@ -31,6 +31,7 @@ _CLAUDE_BIN = "/opt/homebrew/bin/claude"
 _KEYCHAIN_DB = "/Users/ltadmin/Library/Keychains/login.keychain-db"
 
 _keychain_unlocked = False  # unlocked once per process lifetime
+_keychain_lock = __import__("threading").Lock()  # guards _keychain_unlocked flag
 
 
 def _ensure_keychain_unlocked() -> None:
@@ -38,23 +39,26 @@ def _ensure_keychain_unlocked() -> None:
 
     Idempotent — runs at most once per process. Required when bot starts
     as a background process (nohup/SSH) where keychain is locked.
+    Password is passed via stdin (not -p flag) to avoid exposure in ps aux.
     """
     global _keychain_unlocked
-    if _keychain_unlocked:
-        return
-    try:
-        passwd = settings.HOST_PASS or "lambdatest123!"
-        result = subprocess.run(
-            ["security", "unlock-keychain", "-p", passwd, _KEYCHAIN_DB],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            logger.info("Keychain unlocked for Claude CLI")
-            _keychain_unlocked = True
-        else:
-            logger.warning("Keychain unlock failed: %s", result.stderr.strip()[:100])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Keychain unlock error: %s", exc)
+    with _keychain_lock:
+        if _keychain_unlocked:
+            return
+        try:
+            passwd = settings.HOST_PASS or ""
+            result = subprocess.run(
+                ["security", "unlock-keychain", _KEYCHAIN_DB],
+                input=passwd + "\n",
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("Keychain unlocked for Claude CLI")
+                _keychain_unlocked = True
+            else:
+                logger.warning("Keychain unlock failed: %s", result.stderr.strip()[:100])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Keychain unlock error: %s", exc)
 
 MODEL = "gemini-2.0-flash"
 
@@ -244,7 +248,7 @@ Use :rotating_light: for network/rack-level incidents.
 """
 
 
-_INFRA_BOT_DIR = "/Users/ltadmin/infra-bot"  # working dir so project MCP config is loaded
+_INFRA_BOT_DIR = str(__import__("pathlib").Path(__file__).parent.parent)  # working dir so project MCP config is loaded
 
 # Atlassian MCP tools available after OAuth auth
 _ATLASSIAN_MCP_TOOLS = [
@@ -371,9 +375,13 @@ class AIBrain:
 
     def _cache_get(self, key: str):
         entry = self._cache.get(key)
-        if entry and time.time() < entry[0]:
-            logger.debug("Cache hit: %s", key[:20])
-            return entry[1]
+        now = time.time()
+        if entry:
+            if now < entry[0]:
+                logger.debug("Cache hit: %s", key[:20])
+                return entry[1]
+            # Expired — evict eagerly on read
+            del self._cache[key]
         return None
 
     def _cache_set(self, key: str, value, ttl: int) -> None:
@@ -443,7 +451,11 @@ class AIBrain:
             # Extract JSON from response
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             if json_match:
-                parsed = json.loads(json_match.group())
+                try:
+                    parsed = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    logger.warning("Claude returned invalid JSON, falling back to Gemini: %.200s", raw)
+                    return self.classify_gemini(text, thread_history)
                 action = parsed.get("action", "classify")
 
                 if action == "direct":

@@ -29,7 +29,7 @@ def create_app() -> App:
     return app
 
 
-PID_FILE = "/Users/ltadmin/infra-bot/bot.pid"
+PID_FILE = str(__import__("pathlib").Path(__file__).parent / "bot.pid")
 
 
 def _write_pid() -> None:
@@ -46,6 +46,18 @@ def _remove_pid() -> None:
         pass
 
 
+def _validate_config() -> None:
+    """Fail fast if required env vars are missing."""
+    required = {
+        "SLACK_BOT_TOKEN": settings.SLACK_BOT_TOKEN,
+        "SLACK_APP_TOKEN": settings.SLACK_APP_TOKEN,
+        "GEMINI_API_KEY": settings.GEMINI_API_KEY,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise RuntimeError(f"Missing required config: {', '.join(missing)} — check your .env")
+
+
 if __name__ == "__main__":
     import atexit, os  # noqa: E401
 
@@ -54,10 +66,13 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    _validate_config()
+
     # Kill any previously running instance before starting
     if os.path.exists(PID_FILE):
         try:
-            old_pid = int(open(PID_FILE).read().strip())
+            with open(PID_FILE) as _f:
+                old_pid = int(_f.read().strip())
             os.kill(old_pid, 0)          # check if process exists
             os.kill(old_pid, 15)         # SIGTERM
             import time; time.sleep(1)   # give it a moment to exit
