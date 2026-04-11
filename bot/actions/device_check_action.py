@@ -5,10 +5,12 @@ Host-type aware check flow:
     1. SSH uname -s → confirm Darwin
     2. idevice_id -l | grep <UDID>      — is device connected?
     3. tail LRR log for last error line  — lamda-remote-runner-<UDID>.log
+    4. grep LRR log for "device uptime"  — reported uptime in hours
 
   Ubuntu (Android devices):
     1. docker ps --filter name=adbd_<UDID>   — is container running?
     2. docker exec -i adbd_<UDID> adb -s <UDID> get-state  — device state
+    3. docker exec adbd_<UDID> adb -s <UDID> shell uptime  — device uptime
 
 Host type detection order:
   1. SSH `uname -s` → Darwin=macOS, Linux=Ubuntu
@@ -85,6 +87,44 @@ _IDEVICE_ID = "/opt/homebrew/bin/idevice_id"   # full path — SSH non-interacti
 _SLACK_LOG_MAX_CHARS = 2500                       # keep log output inside one Slack message
 
 
+def _get_ios_uptime(host: str, udid: str) -> str:
+    """Read device uptime from LRR log.
+
+    The LRR log contains lines like:
+      device uptime: 12.5 hours
+    Grep the log file for the last occurrence and return the value string,
+    or "N/A" if not found.
+    """
+    cmd = (
+        f"LOG_FILE=$(find {shlex.quote(LRR_LOG_DIR)} -type f -name \"*{udid}*.log\" 2>/dev/null | head -n 1); "
+        f"if [ -z \"$LOG_FILE\" ]; then echo 'N/A'; "
+        f"else UPTIME_LINE=$(grep -i 'device uptime' \"$LOG_FILE\" | tail -n 1 | grep -oE 'device uptime: [0-9.]+ hours'); "
+        f"if [ -z \"$UPTIME_LINE\" ]; then echo 'N/A'; else echo \"$UPTIME_LINE\"; fi; fi"
+    )
+    result = ssh_exec(host, cmd)
+    if result["exit_code"] == 0:
+        return result["output"].strip() or "N/A"
+    return "N/A"
+
+
+def _get_android_uptime(host: str, udid: str) -> str:
+    """Get device uptime via adb shell uptime inside the Docker container.
+
+    Parses the 'up X days/hours/min' portion from the uptime output.
+    Returns a short string like "2 days, 3:15" or "N/A" on failure.
+    """
+    quoted_udid = shlex.quote(udid)
+    cmd = (
+        f"docker exec adbd_{udid} adb -s {quoted_udid} shell uptime 2>/dev/null"
+        f" | sed 's/.*up //; s/,.*//' | tr -d '\\r'"
+    )
+    result = ssh_exec(host, cmd)
+    if result["exit_code"] == 0:
+        uptime_str = result["output"].strip()
+        return uptime_str if uptime_str else "N/A"
+    return "N/A"
+
+
 def _lrr_health_summary(log_output: str) -> str:
     """Parse LRR log and return a one-line health summary for Slack.
 
@@ -125,7 +165,9 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
     if len(log_output) > _SLACK_LOG_MAX_CHARS:
         log_output = "..." + log_output[-_SLACK_LOG_MAX_CHARS:]
 
+    uptime = _get_ios_uptime(host, udid)
     health = _lrr_health_summary(log_output)
+    uptime_line = f"*Device Uptime:* {uptime}"
     log_block = f"*LRR log (last {log_lines} lines):*\n```{log_output}```"
 
     if count != "1":
@@ -139,15 +181,15 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
             return (
                 ":warning:",
                 f"not listed by idevice_id (possible USB flicker) — LRR agent is healthy\n"
-                f"{health}\n{log_block}",
+                f"{uptime_line}\n{health}\n{log_block}",
             )
-        return ":x:", f"not connected (idevice_id)\n{health}\n{log_block}"
+        return ":x:", f"not connected (idevice_id)\n{uptime_line}\n{health}\n{log_block}"
 
     # Device connected — show log, flag errors
     if any(w in log_output.lower() for w in ("error", "fail", "crash", "fatal", "exception")):
-        return ":warning:", f"connected but LRR errors detected\n{health}\n{log_block}"
+        return ":warning:", f"connected but LRR errors detected\n{uptime_line}\n{health}\n{log_block}"
 
-    return ":white_check_mark:", f"connected\n{health}\n{log_block}"
+    return ":white_check_mark:", f"connected\n{uptime_line}\n{health}\n{log_block}"
 
 
 # ── Android / Ubuntu check ────────────────────────────────────────────────────
@@ -178,7 +220,11 @@ def _check_android(host: str, udid: str) -> tuple[str, str]:
 
     state = raw.splitlines()[-1].strip()
     icon, label = _ANDROID_STATE_MAP.get(state, (":information_source:", state))
-    return icon, label
+
+    # Step 3: get device uptime
+    uptime = _get_android_uptime(host, udid)
+    uptime_suffix = f"  |  *Uptime:* {uptime}" if uptime != "N/A" else ""
+    return icon, f"{label}{uptime_suffix}"
 
 
 # ── Unified entry point ───────────────────────────────────────────────────────
