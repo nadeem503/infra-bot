@@ -440,9 +440,10 @@ class AIBrain:
                 role = "User" if msg.get("role") == "user" else "Bot"
                 thread_ctx += f"{role}: {msg['content']}\n"
 
+            thread_header = ("Thread context:\n" + thread_ctx) if thread_ctx else ""
             prompt = (
                 f"{CLAUDE_ROUTER_SYSTEM}\n\n"
-                f"{('Thread context:\n' + thread_ctx) if thread_ctx else ''}"
+                f"{thread_header}"
                 f"Message: {text}\n\n"
                 f"Reply with ONLY valid JSON."
             )
