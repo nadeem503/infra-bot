@@ -123,7 +123,37 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    NEVER set host to a UDID string. If thread context has a UDID, always pass it as "udid", not "host".
    If no specific UDID is mentioned but thread has one, use it — do NOT leave udid blank.
 
-7. NOTE PATTERN / MARK FIXED: "note the pattern", "this is fixed", "fixed nothing to do",
+7. DEVICE DISPOSE: "dispose device", "mark as disposed", "device is dead", "battery bloated",
+   "send to graveyard", "retire device", "decommission" → infra_issue, issue_category=device_dispose.
+   Extract:
+   - host_udid_pairs: space-separated "host_ip,udid" string (e.g. "10.151.1.1,UDID1 10.151.1.2,UDID2")
+     Build from host IPs and UDIDs mentioned in message/thread. Format MUST be "ip,udid" per device.
+   - jira: Jira ticket ID (required — ask if missing; user must provide TTN-XXXXX)
+   - environment: "stage" | "prod" (default "stage"; infer from context or ask)
+   - status: "disposed" | "inactive" (default "disposed")
+   - remark: one of ["Device battery bloated","Device screen is not working",
+     "Device needs to be repaired","Device is deprecated","others"] — map user words to these
+   - where_status: space-separated status filter (default "active faulty maintenance")
+   IMPORTANT: if jira ticket is missing, use action=direct to ask "Please provide a Jira ticket ID (e.g. TTN-12345) for audit trail."
+
+8. DEVICE MIGRATION / ORG ASSIGNMENT: "move device to org", "assign to private cloud",
+   "migrate device", "move to public cloud", "update dedicated_org", "org assignment",
+   "device movement" → infra_issue, issue_category=device_migrate.
+   Extract:
+   - udids: space-separated UDID list (for WHERE udid IN (...))
+   - host_ips: space-separated host IP list (for WHERE host_ip IN (...))
+   - jira: Jira ticket ID (required)
+   - environment: "stage" | "prod" (default "stage")
+   - dedicated_org: org ID (integer as string) or "NULL" if moving to public cloud
+   - status: new status if changing (active|maintenance|faulty|disposed|inactive) or ""
+   - cleanup: "full" | "dedicated" | "adaptive" or "" if not specified
+   - remark: free text describing the migration reason
+   - where_status: space-separated status filter (default "active faulty maintenance")
+   - manual / automation / features: leave as "" unless explicitly specified
+   IMPORTANT: if jira ticket is missing, use action=direct to ask for it.
+   IMPORTANT: "move to public cloud" / "remove from org" → dedicated_org="NULL"
+
+9. NOTE PATTERN / MARK FIXED: "note the pattern", "this is fixed", "fixed nothing to do",
    "note this for future", "remember this fix", "mark as fixed", "note this", "save this fix" →
    intent=note_pattern.
    Extract from the message AND thread context:
@@ -211,7 +241,7 @@ Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch |
 jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down | resigner_down |
 ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down | android_container_down |
-cert_expired | host_service_status
+cert_expired | host_service_status | device_dispose | device_migrate
 
 For ACTION 2 (direct):
 {"action":"direct","reply":"<slack-formatted response, *bold*, bullet points, max 8 lines>"}

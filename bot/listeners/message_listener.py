@@ -242,6 +242,9 @@ ISSUE_TO_ACTION: dict[str, str] = {
     "app_crash":                "adb_logcat",
     "storage_issue":            "adb_clear_storage",
     "device_disconnected":      "device_disconnected",
+    # Device lifecycle (GitHub Actions workflows on LambdatestIncPrivate/migrations)
+    "device_dispose":           "device_dispose",
+    "device_migrate":           "device_migrate",
     # macOS / iOS services
     "lrr_down":                 "lrr_restart",
     "resigner_down":            "resigner_restart",
@@ -273,6 +276,9 @@ def _get_action_class(action_type: str):
         RMDMRestartAction, RDTSARestartAction,
         AndroidContainerRestartAction, AllServicesStatusAction,
     )
+    from bot.actions.device_lifecycle_action import (  # noqa: PLC0415
+        DeviceDisposeAction, DeviceHostUpdateAction,
+    )
     return {
         # Generic device actions
         "ssh_reboot":                SSHAction,
@@ -283,6 +289,9 @@ def _get_action_class(action_type: str):
         "db_query":                  DBAction,
         "jenkins_trigger":           JenkinsAction,
         "device_disconnected":       DeviceDisconnectedAction,
+        # Device lifecycle — GitHub Actions workflow_dispatch
+        "device_dispose":            DeviceDisposeAction,
+        "device_migrate":            DeviceHostUpdateAction,
         # macOS / iOS service actions
         "lrr_restart":               LRRRestartAction,
         "resigner_restart":          ResignerRestartAction,
@@ -415,6 +424,13 @@ def _handle_infra_issue(
         "summary": f"[Infra-Bot] {issue_category} in {region_display}",
         "description": f"Detected via Slack: {text[:500]}",
     }
+    # Merge extra params from Claude — GitHub workflow actions need fields like
+    # jira, environment, dedicated_org, host_udid_pairs, udids, host_ips, cleanup,
+    # remark, status that don't exist in the standard action_params above.
+    # Existing keys are NOT overwritten — standard params take precedence.
+    for _k, _v in params.items():
+        if _k not in action_params and _v is not None and _v != "":
+            action_params[_k] = _v
 
     # --- Rate limiting ---
     allowed, count = check_and_increment(user_id)

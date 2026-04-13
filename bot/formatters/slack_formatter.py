@@ -37,6 +37,8 @@ _ISSUE_LABELS: dict[str, str] = {
     "app_crash":              ":bug: App Crash Detected",
     "jenkins_failure":        ":construction: Jenkins Job Failed",
     "db_mismatch":            ":bar_chart: DB Mismatch Detected",
+    "device_dispose":         ":coffin: Device Dispose Request",
+    "device_migrate":         ":truck: Device Migration / Org Assignment",
 }
 
 
