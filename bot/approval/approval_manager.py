@@ -52,6 +52,8 @@ def _deserialize(raw: str) -> ActionRecord:
 _MAX_WATCHER_THREADS = 50  # prevent unbounded accumulation under high load
 
 
+_DEDUP_TTL_SECONDS = 120  # 2-min window to block duplicate action creation
+
 class ApprovalManager:
     def create_action(
         self,
@@ -63,8 +65,26 @@ class ApprovalManager:
         region: str = "unknown",
         devices: Optional[list] = None,
         dry_run_preview: Optional[str] = None,
+        trace_id: str = "",
     ) -> str:
+        # Fix #10: dedup guard — block same action_type+host+udid within 2 minutes
+        # Prevents double-execution (e.g. LRR restart firing twice for the same device)
+        host = params.get("host", "")
+        udid = params.get("udid", "")
+        dedup_key = f"infra:action:dedup:{action_type}:{host}:{udid}"
+        r = get_redis()
+        existing_id = r.get(dedup_key)
+        if existing_id:
+            existing_id = existing_id.decode() if isinstance(existing_id, bytes) else existing_id
+            logger.warning(
+                "[%s] Duplicate action blocked: %s host=%s udid=%s — existing action_id=%s",
+                trace_id, action_type, host, udid, existing_id,
+            )
+            return existing_id
+
         action_id = str(uuid.uuid4())[:8]
+        r.setex(dedup_key, _DEDUP_TTL_SECONDS, action_id)
+
         record = ActionRecord(
             action_id=action_id,
             action_type=action_type,
@@ -76,11 +96,11 @@ class ApprovalManager:
             devices=devices or [],
             dry_run_preview=dry_run_preview,
         )
-        r = get_redis()
         r.setex(f"{_PREFIX}{action_id}", ACTION_TTL_SECONDS, _serialize(record))
         r.sadd(_INDEX_KEY, action_id)
         r.expire(_INDEX_KEY, ACTION_TTL_SECONDS * 2)
-        logger.info("Action created in Redis: %s (%s)", action_id, action_type)
+        logger.info("[%s] Action created in Redis: %s (%s) host=%s udid=%s",
+                    trace_id, action_id, action_type, host, udid)
         return action_id
 
     def set_msg_ts(self, action_id: str, msg_ts: str, channel: str) -> None:

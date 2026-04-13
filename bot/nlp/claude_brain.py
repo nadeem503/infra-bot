@@ -402,7 +402,7 @@ class AIBrain:
 
     def __init__(self) -> None:
         self._client: Optional[genai.Client] = None
-        self._cache: dict[str, tuple[float, any]] = {}  # key → (expires_ts, value)
+        # Cache is Redis-backed — thread-safe, survives restarts, shared across workers
 
     @property
     def client(self) -> genai.Client:
@@ -413,21 +413,22 @@ class AIBrain:
         return self._client
 
     def _cache_get(self, key: str):
-        entry = self._cache.get(key)
-        now = time.time()
-        if entry:
-            if now < entry[0]:
-                logger.debug("Cache hit: %s", key[:20])
-                return entry[1]
-            # Expired — evict eagerly on read
-            del self._cache[key]
+        from bot.memory.redis_client import get_redis  # noqa: PLC0415
+        try:
+            raw = get_redis().get(f"brain:cache:{key}")
+            if raw:
+                logger.debug("Brain cache hit: %s", key[:20])
+                return json.loads(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Brain cache get error (non-fatal): %s", exc)
         return None
 
     def _cache_set(self, key: str, value, ttl: int) -> None:
-        self._cache[key] = (time.time() + ttl, value)
-        if len(self._cache) > 200:
-            now = time.time()
-            self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+        from bot.memory.redis_client import get_redis  # noqa: PLC0415
+        try:
+            get_redis().setex(f"brain:cache:{key}", ttl, json.dumps(value))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Brain cache set error (non-fatal): %s", exc)
 
     def _cache_key(self, prefix: str, text: str, extra: str = "") -> str:
         return hashlib.md5(f"{prefix}:{text}:{extra}".encode()).hexdigest()
@@ -499,40 +500,39 @@ class AIBrain:
                 logger.warning("Claude returned invalid JSON, falling back to Gemini: %.200s", raw)
                 return self.classify_gemini(text, thread_history)
 
-            if True:
-                action = parsed.get("action", "classify")
+            action = parsed.get("action", "classify")
 
-                if action == "direct":
-                    # Claude is handling this directly — wrap as _direct_reply intent
-                    reply = parsed.get("reply", "")
-                    if reply:
-                        result = {
-                            "intent": "_direct_reply",
-                            "confidence": 1.0,
-                            "params": {"reply": reply},
-                            "_source": "claude",
-                        }
-                        log_claude_call(prompt[:120], reply[:200], 0, True,
-                                        action="direct", intent="_direct_reply")
-                        logger.info("Claude CLI direct reply (len=%d)", len(reply))
-                        self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
-                        return result
-
-                elif action == "classify":
-                    # Claude classified — return as standard classification dict
-                    intent_val = parsed.get("intent", "unknown")
+            if action == "direct":
+                # Claude is handling this directly — wrap as _direct_reply intent
+                reply = parsed.get("reply", "")
+                if reply:
                     result = {
-                        "intent": intent_val,
-                        "confidence": parsed.get("confidence", 0.7),
-                        "params": parsed.get("params", {}),
+                        "intent": "_direct_reply",
+                        "confidence": 1.0,
+                        "params": {"reply": reply},
                         "_source": "claude",
                     }
-                    log_claude_call(prompt[:120], raw[:200], 0, True,
-                                    action="classify", intent=intent_val)
-                    logger.info("Claude CLI classified: intent=%s confidence=%.2f",
-                                result["intent"], result["confidence"])
+                    log_claude_call(prompt[:120], reply[:200], 0, True,
+                                    action="direct", intent="_direct_reply")
+                    logger.info("Claude CLI direct reply (len=%d)", len(reply))
                     self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
                     return result
+
+            elif action == "classify":
+                # Claude classified — return as standard classification dict
+                intent_val = parsed.get("intent", "unknown")
+                result = {
+                    "intent": intent_val,
+                    "confidence": parsed.get("confidence", 0.7),
+                    "params": parsed.get("params", {}),
+                    "_source": "claude",
+                }
+                log_claude_call(prompt[:120], raw[:200], 0, True,
+                                action="classify", intent=intent_val)
+                logger.info("Claude CLI classified: intent=%s confidence=%.2f",
+                            result["intent"], result["confidence"])
+                self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
+                return result
 
         except subprocess.TimeoutExpired:
             logger.warning("Claude CLI timed out — falling back to Gemini")
@@ -544,8 +544,13 @@ class AIBrain:
 
     def classify_gemini(self, text: str, thread_history: list[dict] | None = None) -> dict:
         """Gemini-only classification — called as last-resort fallback."""
-        extra = str(len(thread_history)) if thread_history else ""
-        cache_key = self._cache_key("classify_gemini", text[:200], extra)
+        # Fix #2: hash actual thread content, not just length — avoids cache collisions
+        # between different threads that happen to have the same number of messages
+        gemini_ctx = ""
+        for msg in (thread_history or [])[-10:]:
+            role = "User" if msg.get("role") == "user" else "Bot"
+            gemini_ctx += f"{role}: {msg['content']}\n"
+        cache_key = self._cache_key("classify_gemini", text[:200], gemini_ctx[-200:])
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached

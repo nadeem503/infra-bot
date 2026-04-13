@@ -345,6 +345,7 @@ def _handle_infra_issue(
     user_id: str,
     say,
     client=None,
+    trace_id: str = "",
 ) -> str:
     issue_category = params.get("issue_category", "device_down")
     devices: list[str] = params.get("devices") or []
@@ -446,6 +447,7 @@ def _handle_infra_issue(
         region=region_slug,
         devices=devices,
         dry_run_preview=dry_run_preview,
+        trace_id=trace_id,
     )
 
     if first_device:
@@ -487,7 +489,8 @@ def _handle_infra_issue(
     if client:
         approval_manager.start_escalation_watcher(action_id, channel, thread_ts, client)
 
-    logger.info("Infra issue posted: %s region=%s devices=%s", issue_category, region_slug, devices)
+    logger.info("[%s] Infra issue posted: action_id=%s %s region=%s devices=%s",
+                trace_id, action_id, issue_category, region_slug, devices)
     return f"Analyzing {issue_category} — approval required"
 
 
@@ -539,17 +542,21 @@ def _format_jira_created_blocks(result: dict) -> list[dict]:
 def register_message_listeners(app: App) -> None:
     @app.event("app_mention")
     def handle_mention(event: dict, say, client) -> None:  # noqa: ANN001
+        # Fix #11: trace_id links every log line for this request — grep it to follow
+        # the full path: classify → approval create → action execute → result
+        trace_id = uuid.uuid4().hex[:8]
+
         text = event.get("text", "")
         channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts", "")
         user_id = event.get("user", "")
 
-        logger.info("@mention from %s in %s", user_id, channel)
+        logger.info("[%s] @mention from %s in %s: %.80s", trace_id, user_id, channel, text)
 
         # --- Authorization check — only allowlisted users may trigger actions ---
         if user_id not in AUTHORIZED_USER_IDS:
             say(text=_UNAUTHORIZED_REPLY, thread_ts=thread_ts)
-            logger.warning("Unauthorized action attempt by %s: %.100s", user_id, text)
+            logger.warning("[%s] Unauthorized attempt by %s: %.100s", trace_id, user_id, text)
             return
 
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
@@ -605,7 +612,7 @@ def register_message_listeners(app: App) -> None:
         params = classification.get("params", {})
         confidence = classification.get("confidence", 0.0)
 
-        logger.info("Classified [%s]: intent=%s confidence=%.2f", source, intent, confidence)
+        logger.info("[%s] Classified [%s]: intent=%s confidence=%.2f", trace_id, source, intent, confidence)
         log_user_request(user_id, channel, classify_text[:150], intent, confidence, source)
 
         # --- Quota exceeded — surface friendly message instead of crashing ---
@@ -671,7 +678,7 @@ def register_message_listeners(app: App) -> None:
             say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "infra_issue":
-            bot_reply = _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client)
+            bot_reply = _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client, trace_id=trace_id)
 
         else:
             bot_reply = _unclear_reply(text)
