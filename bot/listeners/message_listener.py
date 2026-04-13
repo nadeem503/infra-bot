@@ -89,6 +89,23 @@ _CONTEXT_DEPENDENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Fix #6: maximum characters sent to the classifier.
+# Thread context + user text can balloon to several KB on busy threads — this caps
+# the Redis cache key size and keeps Claude prompts lean. The tail is kept because
+# recent context (the user's latest message) matters more than the thread opener.
+_CLASSIFY_TEXT_MAX = 1200
+
+
+# Fix #5: moved from inside handle_mention (was re-created on every mention).
+# Coerces a device/host value to a plain string — Claude sometimes returns dicts
+# e.g. {"host": "10.x.x.x"} instead of a bare string inside devices/hosts lists.
+def _flat_str(v) -> str:  # noqa: ANN001
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return v.get("host") or v.get("ip") or v.get("udid") or v.get("serial") or ""
+    return str(v) if v else ""
+
 
 def _extract_message_text(msg: dict) -> str:
     """Extract all readable text from a Slack message including attachments and blocks.
@@ -124,16 +141,25 @@ def _extract_message_text(msg: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _build_live_thread_history(client, channel: str, thread_ts: str, current_ts: str, limit: int = 10) -> list[dict]:
-    """Fetch live Slack thread and return as Claude thread_history format.
+def _build_live_thread_history(
+    client, channel: str, thread_ts: str, current_ts: str,
+    limit: int = 10, prefetched: list | None = None,
+) -> list[dict]:
+    """Build Claude thread_history from a live Slack thread.
 
     Captures ALL messages (including non-@mention user messages) so corrections
     like "use idevice_id not docker" posted without @mention are visible to Claude.
+    Pass prefetched=<messages list> to reuse an already-fetched conversations_replies
+    response — avoids a duplicate API call when _build_thread_context is also needed.
     Returns list of {"role": "user"|"assistant", "content": str} dicts.
     """
     try:
-        replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
-        messages = replies.get("messages", [])
+        # Fix #4: accept pre-fetched messages to avoid a second conversations_replies call
+        if prefetched is not None:
+            messages = prefetched
+        else:
+            replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
+            messages = replies.get("messages", [])
         # Exclude the current message itself
         messages = [m for m in messages if m.get("ts") != current_ts]
         # Take last N messages (most recent context)
@@ -151,15 +177,24 @@ def _build_live_thread_history(client, channel: str, thread_ts: str, current_ts:
     return []
 
 
-def _build_thread_context(client, channel: str, thread_ts: str, current_ts: str, full: bool = False) -> str:
-    """Fetch Slack thread and return formatted context string.
+def _build_thread_context(
+    client, channel: str, thread_ts: str, current_ts: str,
+    full: bool = False, prefetched: list | None = None,
+) -> str:
+    """Build a formatted thread context string from a Slack thread.
 
     full=True  → include ALL non-bot messages (for summarization).
-    full=False → return only the most recent non-bot substantive message.
+    full=False → return parent message + most recent substantive user message.
+    Pass prefetched=<messages list> to reuse an already-fetched conversations_replies
+    response — avoids a duplicate API call when _build_live_thread_history is also needed.
     """
     try:
-        replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
-        messages = replies.get("messages", [])
+        # Fix #4: accept pre-fetched messages to avoid a second conversations_replies call
+        if prefetched is not None:
+            messages = prefetched
+        else:
+            replies = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
+            messages = replies.get("messages", [])
         # Exclude the current mention message itself
         messages = [m for m in messages if m.get("ts") != current_ts]
 
@@ -491,7 +526,16 @@ def _handle_infra_issue(
 
     logger.info("[%s] Infra issue posted: action_id=%s %s region=%s devices=%s",
                 trace_id, action_id, issue_category, region_slug, devices)
-    return f"Analyzing {issue_category} — approval required"
+    # Fix #2: return a descriptive string that gets stored in thread_memory as the bot reply.
+    # Previously stored "Analyzing device_down — approval required" — Claude couldn't answer
+    # follow-up questions like "what action did you propose?" or "what's the action ID?"
+    # because the actual details (action_id, action_type, devices) weren't in memory.
+    device_summary = ", ".join(devices[:3]) + (f" +{len(devices) - 3} more" if len(devices) > 3 else "")
+    return (
+        f"[Action {action_id}] Proposed `{action_type}` for `{issue_category}` in {region_slug}"
+        + (f" | devices: {device_summary}" if device_summary else "")
+        + " — awaiting approval"
+    )
 
 
 def _format_jira_created_blocks(result: dict) -> list[dict]:
@@ -573,19 +617,34 @@ def register_message_listeners(app: App) -> None:
         clean = text.split(">", 1)[-1].strip().lower().rstrip("?! ")
         is_summarize = bool(_CONTEXT_DEPENDENT_RE.search(clean))
         is_thread_reply = thread_ts != event.get("ts", "")  # mentioned inside a thread
+        current_ts = event.get("ts", "")
+
+        # Fix #4: fetch the Slack thread once and share the result between
+        # _build_live_thread_history and _build_thread_context.
+        # Previously both functions independently called conversations_replies — two
+        # identical API calls for every thread reply or thin-text mention.
+        prefetched_thread: list[dict] | None = None
+        if is_thread_reply or _is_thin_text(clean) or is_summarize:
+            try:
+                _r = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
+                prefetched_thread = _r.get("messages", [])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[%s] Thread prefetch failed: %s", trace_id, exc)
+                prefetched_thread = []
 
         if is_thread_reply:
             live_history = _build_live_thread_history(
-                client, channel, thread_ts, event.get("ts", ""), limit=10
+                client, channel, thread_ts, current_ts, limit=10,
+                prefetched=prefetched_thread,
             )
             if live_history:
                 thread_history = live_history
-                logger.info("Thread reply: using live Slack history (%d msgs)", len(live_history))
+                logger.info("[%s] Thread reply: using live Slack history (%d msgs)", trace_id, len(live_history))
 
         if _is_thin_text(clean) or is_summarize or is_thread_reply:
             ctx = _build_thread_context(
-                client, channel, thread_ts, event.get("ts", ""),
-                full=is_summarize,
+                client, channel, thread_ts, current_ts,
+                full=is_summarize, prefetched=prefetched_thread,
             )
             if ctx:
                 if is_summarize:
@@ -593,13 +652,19 @@ def register_message_listeners(app: App) -> None:
                         f"Thread content to summarize:\n{ctx}\n\n"
                         f"User request: {text}"
                     )
-                    logger.info("Summarize request — enriched with full thread (%d chars)", len(ctx))
+                    logger.info("[%s] Summarize request — enriched with full thread (%d chars)", trace_id, len(ctx))
                 else:
                     classify_text = ctx + " " + text
-                    logger.info("Thread reply enriched with context: %.80s", ctx)
+                    logger.info("[%s] Thread reply enriched with context: %.80s", trace_id, ctx)
 
         # Strip Slack formatting before classification so regex/Claude see clean text
         classify_text = _clean_slack_text(classify_text)
+
+        # Fix #6: cap classify_text so very long threads don't bloat the Redis cache key
+        # and Claude prompt. Keep the tail — the user's latest message is the most relevant.
+        if len(classify_text) > _CLASSIFY_TEXT_MAX:
+            classify_text = classify_text[-_CLASSIFY_TEXT_MAX:]
+            logger.debug("[%s] classify_text capped at %d chars", trace_id, _CLASSIFY_TEXT_MAX)
 
         # ── Claude CLI → classify/direct → Gemini fallback ───────────────────
         # Claude handles all intent detection including create_jira — the router
@@ -619,6 +684,42 @@ def register_message_listeners(app: App) -> None:
         if intent == "_quota_exceeded":
             from bot.nlp.claude_brain import _QUOTA_MSG
             say(text=_QUOTA_MSG, thread_ts=thread_ts)
+            return
+
+        # Fix #3: confidence gate — post A/B/C clarification card when the classifier
+        # is below threshold. Previously CONFIDENCE_THRESHOLD was defined but never checked,
+        # so the bot acted on every low-confidence classification without asking the user.
+        # Skip for: _direct_reply / _quota_exceeded (already handled above), and "unknown"
+        # (falls through to _unclear_reply which already asks for clarification).
+        _SKIP_GATE = frozenset({"_direct_reply", "_quota_exceeded", "unknown"})
+        if confidence < CONFIDENCE_THRESHOLD and intent not in _SKIP_GATE:
+            clarify_id = uuid.uuid4().hex[:8]
+            # Offer: detected intent | generic device-check | "rephrase" escape hatch
+            _options: list[dict] = [
+                {"intent": intent, "params": params,
+                 "label": intent.replace("_", " ").title()},
+                {"intent": "device_check", "params": params,
+                 "label": "Check device status only"},
+                {"intent": "unknown", "params": {},
+                 "label": "Neither \u2014 I\u2019ll rephrase"},
+            ]
+            # Deduplicate in case detected intent is already "device_check"
+            _seen: set[str] = set()
+            unique_opts: list[dict] = []
+            for o in _options:
+                if o["intent"] not in _seen:
+                    _seen.add(o["intent"])
+                    unique_opts.append(o)
+            get_redis().setex(
+                f"infra:clarify:{clarify_id}", 300,
+                json.dumps({"options": unique_opts, "text": classify_text}),
+            )
+            blocks = _formatter.format_clarification_card(clarify_id, unique_opts)
+            say(blocks=blocks, text="Not sure what you mean — please clarify.", thread_ts=thread_ts)
+            logger.info(
+                "[%s] Low confidence (%.2f) — clarification card posted (intent=%s)",
+                trace_id, confidence, intent,
+            )
             return
 
         # --- Claude direct reply — Claude handled it intelligently, post as-is ---
@@ -642,12 +743,7 @@ def register_message_listeners(app: App) -> None:
             udids = params.get("udids") or []
             log_lines = int(params.get("log_lines") or 20)
             # Flatten: Claude sometimes returns dicts inside devices/hosts/udids lists
-            def _flat_str(v) -> str:  # noqa: ANN001
-                if isinstance(v, str):
-                    return v
-                if isinstance(v, dict):
-                    return v.get("host") or v.get("ip") or v.get("udid") or v.get("serial") or ""
-                return str(v) if v else ""
+            # _flat_str is defined at module level (Fix #5)
             hosts = [_flat_str(h) for h in hosts if h]
             udids = [_flat_str(u) for u in udids if u]
             # If host not set but devices list has IPs vs serials, split them
@@ -690,6 +786,10 @@ def register_message_listeners(app: App) -> None:
     @app.action("clarify_choice")
     def handle_clarify_choice(ack, body, client) -> None:  # noqa: ANN001
         ack()
+        # Fix #1: trace_id for clarification-choice executions.
+        # Previously these had no trace_id, so if an infra action was triggered via A/B/C
+        # card (not a direct @mention), its log lines couldn't be correlated end-to-end.
+        trace_id = uuid.uuid4().hex[:8]
         value: str = body["actions"][0]["value"]
         user_id: str = body["user"]["id"]
         channel: str = body["channel"]["id"]
@@ -724,7 +824,7 @@ def register_message_listeners(app: App) -> None:
         intent = chosen.get("intent", "unknown")
         params = chosen.get("params", {})
 
-        logger.info("Clarify choice: clarify_id=%s idx=%d intent=%s", clarify_id, idx, intent)
+        logger.info("[%s] Clarify choice: clarify_id=%s idx=%d intent=%s user=%s", trace_id, clarify_id, idx, intent, user_id)
 
         def _say(text=None, blocks=None, thread_ts=thread_ts, **kwargs):  # noqa: ANN001
             kw = {"channel": channel, "thread_ts": thread_ts}
@@ -753,7 +853,7 @@ def register_message_listeners(app: App) -> None:
             client.chat_postMessage(channel=channel, thread_ts=thread_ts,
                                     text=_jira_assigned_reply(result))
         elif intent == "infra_issue":
-            _handle_infra_issue(params, original_text, channel, thread_ts, user_id, _say, client)
+            _handle_infra_issue(params, original_text, channel, thread_ts, user_id, _say, client, trace_id=trace_id)
         else:
             client.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,

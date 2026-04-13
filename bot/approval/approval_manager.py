@@ -177,12 +177,17 @@ class ApprovalManager:
             self._save(record)
 
     def list_pending(self) -> list[ActionRecord]:
+        """Return all actions awaiting approval — pending AND pre_approved (step 1 of 2 done).
+
+        Previously only returned status=="pending", so double-approval actions that had
+        received their first approval (pre_approved) vanished from /infra status entirely.
+        """
         r = get_redis()
         action_ids = r.smembers(_INDEX_KEY)
         pending = []
         for aid in action_ids:
             record = self._load(aid)
-            if record and record.status == "pending":
+            if record and record.status in ("pending", "pre_approved"):
                 pending.append(record)
         return sorted(pending, key=lambda x: x.requested_at)
 

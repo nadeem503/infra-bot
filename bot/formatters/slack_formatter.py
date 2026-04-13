@@ -15,6 +15,30 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Human-readable card headers keyed by issue_category.
+# Replaces the hardcoded "Infra AI Response" so approvers immediately know what they're looking at.
+_ISSUE_LABELS: dict[str, str] = {
+    "lrr_down":               ":apple: LRR Restart Requested",
+    "resigner_down":          ":key: Resigner Restart Requested",
+    "ihm_down":               ":gear: IHM Restart Requested",
+    "reconciler_down":        ":arrows_counterclockwise: Reconciler Restart Requested",
+    "lrp_down":               ":electric_plug: LRP Restart Requested",
+    "cert_expired":           ":closed_lock_with_key: Certificate Expired — Resigner Needed",
+    "device_down":            ":iphone: Device Issue Detected",
+    "reboot":                 ":recycle: Device Reboot Requested",
+    "adb_issue":              ":android: ADB Issue Detected",
+    "network_issue":          ":globe_with_meridians: Network Issue Detected",
+    "device_disconnected":    ":electric_plug: Device Disconnected",
+    "rmdm_down":              ":gear: RMDM Service Down",
+    "rdtsa_down":             ":gear: RDTSA Service Down",
+    "android_container_down": ":whale: Android Container Down",
+    "host_service_status":    ":mag: Host Service Status Check",
+    "storage_issue":          ":floppy_disk: Storage Issue Detected",
+    "app_crash":              ":bug: App Crash Detected",
+    "jenkins_failure":        ":construction: Jenkins Job Failed",
+    "db_mismatch":            ":bar_chart: DB Mismatch Detected",
+}
+
 
 def _make_mention(slack_id: str) -> str:
     if slack_id.startswith("C"):
@@ -64,9 +88,11 @@ class SlackFormatter:
             else "\u2022 Device status check"
         )
 
-        # Build main section text
+        # Fix #9: dynamic header — approvers see "LRR Restart Requested" not "Infra AI Response",
+        # so they know immediately what they're approving without reading the detail lines.
+        header = _ISSUE_LABELS.get(issue_type or "", ":rotating_light: Infra Issue Detected")
         main_text = (
-            ":rotating_light: *Infra AI Response*\n"
+            f"*{header}*\n"
             f"\u2022 *Issue Detected:* `{issue_type or 'general'}`\n"
             f"\u2022 *Region:* {region_display}\n"
             f"\u2022 *Devices:* {device_list}\n"
@@ -75,8 +101,22 @@ class SlackFormatter:
             "\u2022 *Executing:* Awaiting approval :hourglass_flowing_sand:"
         )
 
+        # Fix #10: timestamp + action ID in a context block so approvers can see card age
+        # at a glance. Slack renders <!date^...> as a local time for every viewer's timezone.
+        action_id_hint = action_records[0]["action_id"] if action_records else ""
+        ts_val = int(time.time())
         blocks: list[dict] = [
             {"type": "section", "text": {"type": "mrkdwn", "text": main_text}},
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        f":clock1: Requested <!date^{ts_val}^{{time_secs}}|just now>"
+                        + (f"  \u00b7  Action ID: `{action_id_hint}`" if action_id_hint else "")
+                    ),
+                }],
+            },
             {"type": "divider"},
         ]
 
@@ -168,10 +208,18 @@ class SlackFormatter:
             {"type": "actions", "elements": elements},
         ]
 
+    # Fix #11: status icons for /infra status output.
+    # pre_approved means step 1 of a double-approval flow is done — a second approver is still needed.
+    # Without the status column, all items looked identical and the "1/2 approved" state was invisible.
+    _STATUS_ICONS: dict[str, str] = {
+        "pending":      ":hourglass:",
+        "pre_approved": ":ballot_box_with_check: 1/2",
+    }
+
     def format_pending_list(self, records: list) -> str:
         if not records:
             return ":white_check_mark: No pending actions right now."
-        lines = [f":hourglass: *{len(records)} pending action(s):*\n"]
+        lines = [f":hourglass: *{len(records)} awaiting approval:*\n"]
         for rec in records:
             age_min = max(0, int((time.time() - rec.requested_at) / 60))
             devices_str = ", ".join(f"`{d}`" for d in rec.devices[:3])
@@ -179,9 +227,11 @@ class SlackFormatter:
                 devices_str += f" +{len(rec.devices) - 3} more"
             if not devices_str:
                 devices_str = "_no device_"
+            status_icon = self._STATUS_ICONS.get(rec.status, ":hourglass:")
             lines.append(
                 f"\u2022 `{rec.action_id}` \u2014 `{rec.action_type}` | "
-                f"{rec.region} | {devices_str} | {age_min}m ago | <@{rec.requested_by}>"
+                f"{rec.region} | {devices_str} | {age_min}m ago | "
+                f"<@{rec.requested_by}> | {status_icon} `{rec.status}`"
             )
         return "\n".join(lines)
 
@@ -190,8 +240,38 @@ class SlackFormatter:
         message = result.get("message", "No message")
         details = result.get("details", {})
         text = f"{icon} *Action Completed:* `{action_type}`\n{message}"
+
+        # Fix #8: render per-device breakdown when present.
+        # LRRRestartAction returns results=[{udid, loaded, ios_version, note, load_rc}].
+        # Without this, approvers only saw "LRR reloaded 2/3 devices" — no way to know
+        # which UDID failed or was skipped due to iOS < 12.4.
+        per_device = result.get("results") or []
+        if per_device:
+            for r in per_device:
+                ok = r.get("loaded") or r.get("success")
+                # Skipped (iOS < 12.4) gets a different icon from a hard failure
+                d_icon = (
+                    ":arrow_right_hook:" if r.get("note") and not ok
+                    else ":white_check_mark:" if ok
+                    else ":x:"
+                )
+                udid = r.get("udid", "")
+                short_id = (udid[:8] + "\u2026") if len(udid) > 8 else udid
+                note = r.get("note") or ""
+                if not note and r.get("ios_version"):
+                    note = f"iOS {r['ios_version']}"
+                elif not note and r.get("load_rc") is not None:
+                    note = f"rc={r['load_rc']}"
+                text += f"\n  {d_icon} `{short_id}` {('— ' + note) if note else ''}"
+
         if details.get("output"):
-            text += f"\n```{details['output'][:400]}```"
+            output = details["output"]
+            truncated = len(output) > 400
+            # Fix #7: append a truncation notice so operators know there is more output
+            # to look at in logs — previously the cut-off was silent.
+            text += f"\n```{output[:400]}```"
+            if truncated:
+                text += f"\n_\u2026 output truncated ({len(output):,} chars total — check bot logs for full output)_"
         if details.get("rows"):
             text += f"\n_Returned {len(details['rows'])} row(s)_"
         if details.get("url"):
