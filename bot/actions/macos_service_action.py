@@ -79,6 +79,13 @@ class LRRRestartAction(BaseAction):
         host = self.params.get("host", "")
         udid = self.params.get("udid", "") or ""
 
+        # Guard: reject if host looks like a UDID instead of an IP address
+        # This catches NLP misclassification where UDID gets set as host
+        _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+        if host and not _IP_RE.match(host):
+            logger.error("LRRRestartAction: host '%s' is not a valid IP — aborting to prevent misfire", host)
+            return {"success": False, "message": f"Invalid host `{host}` — expected an IP address, got what looks like a UDID. Please retry with the correct host IP."}
+
         # Gather UDIDs: explicit udid param, then devices list, then discover via idevice_id
         udids: list[str] = []
         if udid and _UDID_RE.match(udid):
@@ -88,6 +95,8 @@ class LRRRestartAction(BaseAction):
             udids = [u for u in raw if isinstance(u, str) and _UDID_RE.match(u)]
 
         if not udids:
+            # Do NOT silently bulk-restart all devices — require explicit confirmation
+            logger.warning("LRRRestartAction: no UDID specified for host %s — will discover all devices", host)
             rc, out, _ = _run(host, f"{IDEVICE_ID} -l 2>/dev/null")
             if rc == 0 and out.strip():
                 udids = [u.strip() for u in out.strip().splitlines() if u.strip()]

@@ -109,6 +109,12 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
 
 5. AMBIGUOUS (multiple actions in one message, unclear intent) → action=direct, ask to clarify.
 
+6. LRR/PLIST RESTART: "restart LRR", "restart the plist", "reload plist", "reload LRR" →
+   intent=infra_issue, issue_category=lrr_down.
+   CRITICAL: Always set "host" to the IP address (e.g. "10.x.x.x") and "udid" to the device UDID.
+   NEVER set host to a UDID string. If thread context has a UDID, always pass it as "udid", not "host".
+   If no specific UDID is mentioned but thread has one, use it — do NOT leave udid blank.
+
 == DC INFRASTRUCTURE ==
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
