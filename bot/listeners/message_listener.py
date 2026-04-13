@@ -46,6 +46,11 @@ JIRA_BROWSE = "https://lambdatest.atlassian.net/browse"
 
 CONFIDENCE_THRESHOLD = 0.6
 
+# Action types that skip the bot approval card and execute immediately.
+# The GitHub Actions workflow itself has environment protection gates for prod approval.
+# After triggering, the bot notifies MOBILE_INFRA_SLACK_ID for awareness.
+_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate"})
+
 # Only these users may trigger infra actions (device checks, restarts, Jira, etc.)
 # All other users receive greetings/capability replies only.
 AUTHORIZED_USER_IDS: frozenset[str] = frozenset({
@@ -460,6 +465,44 @@ def _handle_infra_issue(
                 thread_ts=thread_ts,
             )
             return f"Duplicate {issue_category} skipped"
+
+    # --- Auto-execute path for lifecycle workflow actions ---
+    # device_dispose and device_migrate skip the bot approval card entirely.
+    # The GitHub Actions workflow already has environment protection gates.
+    # We trigger the WF immediately, post the result, then notify mobile-infra.
+    if action_type in _AUTO_EXECUTE_ACTIONS:
+        ActionClass = _get_action_class(action_type)
+        if ActionClass:
+            set_last_action(user_id, action_type)
+            action = ActionClass(
+                params=action_params, triggered_by=user_id,
+                channel=channel, region=region_slug,
+            )
+            try:
+                result = action.execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Auto-execute %s failed: %s", action_type, exc)
+                result = {"success": False, "message": f"Execution error: {type(exc).__name__}", "details": {}}
+
+            result_text = _formatter.format_result(action_type, result)
+
+            # Notify mobile-infra team so they can track the GH Actions run
+            notify_id = settings.MOBILE_INFRA_SLACK_ID
+            if notify_id and result.get("success"):
+                if notify_id.startswith("S"):          # Slack user-group: <!subteam^S...>
+                    notify_mention = f"<!subteam^{notify_id}>"
+                elif notify_id.startswith("C"):        # channel: <#C...>
+                    notify_mention = f"<#{notify_id}>"
+                else:                                  # user ID: <@U...>
+                    notify_mention = f"<@{notify_id}>"
+                result_text += f"\n\n{notify_mention} FYI — workflow triggered, please monitor the run above."
+
+            say(text=result_text, thread_ts=thread_ts)
+            logger.info("Auto-executed %s for %s region=%s", action_type, issue_category, region_slug)
+            return f"[Auto-executed] `{action_type}` for `{issue_category}` in {region_slug}"
+        else:
+            say(text=_formatter.format_error(f"No handler for `{action_type}`"), thread_ts=thread_ts)
+            return f"No handler for {action_type}"
 
     # --- Device personality warnings ---
     from bot.memory import device_tracker  # noqa: PLC0415

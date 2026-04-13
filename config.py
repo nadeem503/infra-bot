@@ -40,6 +40,10 @@ class Settings:
     # GitHub
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
 
+    # Slack group/user to notify after auto-executing lifecycle workflows (device_dispose, device_migrate).
+    # Set to a user group handle like "!subteam^S..." or a channel ID like "C..." or user ID "U..."
+    MOBILE_INFRA_SLACK_ID: str = os.getenv("MOBILE_INFRA_SLACK_ID", "")
+
     # Database
     DB_HOST: str = os.getenv("DB_HOST", "")
     DB_USER: str = os.getenv("DB_USER", "")
