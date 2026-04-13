@@ -36,7 +36,12 @@ def get_history(channel: str, thread_ts: str) -> list[dict[str, Any]]:
     """Return messages in chronological order (oldest first)."""
     r = get_redis()
     raw = r.lrange(_key(channel, thread_ts), 0, -1)
-    messages = [json.loads(m) for m in raw]
+    messages = []
+    for m in raw:
+        try:
+            messages.append(json.loads(m))
+        except json.JSONDecodeError:
+            logger.warning("Skipping corrupted message entry in thread memory")
     messages.reverse()   # LPUSH stores newest first
     return messages
 

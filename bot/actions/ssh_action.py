@@ -10,6 +10,7 @@ The old paramiko+bastion path is removed — bot host 10.151.2.248 has direct SS
 from __future__ import annotations
 
 import re
+import shlex
 
 from utils.ssh_exec import ssh_exec
 from .base_action import BaseAction
@@ -65,7 +66,7 @@ class SSHAction(BaseAction):
                 "details": {"host": host},
             }
         self.logger.info("ssh_reboot iOS: host=%s udid=%s", host, udid)
-        result = ssh_exec(host, f"{_IDEVICEDIAGNOSTICS} -u {udid} restart")
+        result = ssh_exec(host, f"{_IDEVICEDIAGNOSTICS} -u {shlex.quote(udid)} restart")
         if result["exit_code"] == -1:
             return {
                 "success": False,

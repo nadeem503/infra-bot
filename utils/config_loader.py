@@ -8,7 +8,7 @@ import yaml
 CONFIG_DIR = Path("config")
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=10)
 def load_config(filename: str) -> Any:
     """Load a YAML file from config/ (cached after first read)."""
     config_path = CONFIG_DIR / filename
