@@ -123,6 +123,19 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    NEVER set host to a UDID string. If thread context has a UDID, always pass it as "udid", not "host".
    If no specific UDID is mentioned but thread has one, use it — do NOT leave udid blank.
 
+7. NOTE PATTERN / MARK FIXED: "note the pattern", "this is fixed", "fixed nothing to do",
+   "note this for future", "remember this fix", "mark as fixed", "note this", "save this fix" →
+   intent=note_pattern.
+   Extract from the message AND thread context:
+   - udid: device UDID (from thread if not in message)
+   - host: host IP (from thread if not in message)
+   - device_name: device model/name if mentioned (e.g. "iPhone 15 Plus")
+   - issue_type: short slug of the issue (e.g. "WDAstatus_failed", "lrr_down", "adb_offline")
+   - pattern: one-sentence description of what the issue was and what fixed it
+   - steps: list of fix step strings (commands or actions, in order)
+   - fixed: true if user says "fixed", "nothing to do", "resolved", "done"; false otherwise
+   - region: infer from host IP (10.151→ap, 10.100→dublin, 10.146→us) or null
+
 == DC INFRASTRUCTURE ==
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
@@ -185,15 +198,16 @@ All at: https://jenkins-stage.lambdatestinternal.com/job/<job-name>/
 7. MDM: confirm 4 profiles (MITM Proxy, LT LittleProxy cert, Android LT Certificate, Android Restrictions)
 
 For ACTION 1 (classify):
-{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":20}}
+{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":20,"device_name":"","pattern":"","steps":[],"fixed":false}}
 
 log_lines: number of log lines to tail. Default 20. Extract from message if user says "last 100 lines", "show 200 lines", "tail 30", etc.
 
 IMPORTANT — all list fields must contain plain strings only, never objects/dicts.
 For device_check: set "host"="10.x.x.x", "udid"="<serial>", "devices":["10.x.x.x","<serial>"].
 For multiple devices: "hosts":["10.x.x.1","10.x.x.2"], "udids":["serial1","serial2"] (parallel arrays).
+For note_pattern: set "pattern"="one-sentence description", "steps":["step1","step2"], "fixed":true/false.
 
-Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | unknown
+Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | note_pattern | unknown
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch |
 jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down | resigner_down |
 ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down | android_container_down |

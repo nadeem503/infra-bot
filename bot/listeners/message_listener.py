@@ -457,8 +457,11 @@ def _handle_infra_issue(
             personality_warnings.append(p)
 
     # --- Learning recommendation ---
-    from bot.memory import learning_store  # noqa: PLC0415
+    from bot.memory import learning_store, pattern_store  # noqa: PLC0415
     recommendation = learning_store.get_recommendation(issue_category, region_slug)
+    # Fetch any operator-noted patterns for this issue_type so approvers see
+    # "an operator previously fixed this with: reboot + reload LRR plist"
+    prior_patterns = pattern_store.get_patterns(issue_category, region_slug, limit=2)
 
     # --- Dry-run preview ---
     dry_run_preview: str | None = None
@@ -512,6 +515,7 @@ def _handle_infra_issue(
         }],
         personality_warnings=personality_warnings,
         recommendation=recommendation,
+        prior_patterns=prior_patterns,
     )
 
     resp = say(blocks=blocks, text=f"Infra-Bot: {issue_category}", thread_ts=thread_ts)
@@ -581,6 +585,83 @@ def _format_jira_created_blocks(result: dict) -> list[dict]:
         },
     ]
     return blocks
+
+
+def _handle_note_pattern(
+    params: dict,
+    channel: str,
+    thread_ts: str,
+    user_id: str,
+    say,
+) -> str:
+    """Handle 'note_pattern' intent: store fix pattern and acknowledge in thread.
+
+    Use case: operator says "Note the pattern for future fix @Infra-bot. This device
+    is fixed nothing to do." Claude extracts UDID, host, issue_type, pattern description,
+    and fix steps from the message + thread context. We store them in pattern_store and
+    reply with a formatted acknowledgment mirroring what the operator saw.
+
+    The stored patterns are surfaced on future approval cards for the same issue_type
+    so the next approver can see "an operator noted: reboot + reload LRR plist fixes this".
+    """
+    from bot.memory import pattern_store  # noqa: PLC0415
+
+    udid         = params.get("udid", "")
+    host         = params.get("host", "")
+    issue_type   = params.get("issue_type") or params.get("issue_category") or "general"
+    pattern_text = params.get("pattern", "")
+    steps: list[str] = params.get("steps") or []
+    fixed        = bool(params.get("fixed", False))
+    device_name  = params.get("device_name", "")
+    region       = params.get("region") or "unknown"
+
+    # Persist the pattern if there is anything to store
+    if pattern_text or steps:
+        pattern_store.save_pattern(
+            udid=udid,
+            host=host,
+            issue_type=issue_type,
+            pattern=pattern_text,
+            steps=steps,
+            region=region,
+            saved_by=user_id,
+            device_name=device_name,
+        )
+        logger.info("Pattern saved: issue_type=%s region=%s udid=%.12s by=%s",
+                    issue_type, region, udid, user_id)
+
+    # ── Build reply ──────────────────────────────────────────────────────────
+    lines: list[str] = []
+
+    # Header: device confirmed fixed (or just pattern noted with no device context)
+    if fixed and (udid or host):
+        dev_label = f"`{udid}`"
+        if device_name:
+            dev_label += f" ({device_name})"
+        host_label = f" on `{host}`" if host else ""
+        lines.append(
+            f":white_check_mark: Got it! Device {dev_label}{host_label} "
+            f"is confirmed *fixed* \u2014 no action needed."
+        )
+    elif pattern_text or steps:
+        lines.append(":brain: Got it! Pattern noted.")
+    else:
+        lines.append(":white_check_mark: Noted! I didn't catch specific steps — feel free to add them.")
+
+    # Pattern body
+    if pattern_text or steps:
+        lines.append("")
+        lines.append("*Pattern noted for future reference:*")
+        if pattern_text:
+            lines.append(f"\u2022 {pattern_text}")
+        if steps:
+            # Render steps as inline arrow chain: `step1` → `step2` → `step3`
+            steps_chain = " \u2192 ".join(f"`{s}`" for s in steps)
+            lines.append(f"\u2022 *Steps:* {steps_chain}")
+
+    reply = "\n".join(lines)
+    say(text=reply, thread_ts=thread_ts)
+    return reply
 
 
 def register_message_listeners(app: App) -> None:
@@ -776,6 +857,9 @@ def register_message_listeners(app: App) -> None:
         elif intent == "infra_issue":
             bot_reply = _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client, trace_id=trace_id)
 
+        elif intent == "note_pattern":
+            bot_reply = _handle_note_pattern(params, channel, thread_ts, user_id, say)
+
         else:
             bot_reply = _unclear_reply(text)
             say(text=bot_reply, thread_ts=thread_ts)
@@ -854,6 +938,8 @@ def register_message_listeners(app: App) -> None:
                                     text=_jira_assigned_reply(result))
         elif intent == "infra_issue":
             _handle_infra_issue(params, original_text, channel, thread_ts, user_id, _say, client, trace_id=trace_id)
+        elif intent == "note_pattern":
+            _handle_note_pattern(params, channel, thread_ts, user_id, _say)
         else:
             client.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,

@@ -78,6 +78,7 @@ class SlackFormatter:
         action_records: list[dict],
         personality_warnings: list[str] | None = None,
         recommendation: dict | None = None,
+        prior_patterns: list[dict] | None = None,
     ) -> list[dict]:
         """Build Block Kit blocks for the main analysis response."""
         owner_mention, owner_name = self.get_owner_mentions(region)
@@ -134,6 +135,27 @@ class SlackFormatter:
                     ),
                 }],
             })
+
+        # Operator-noted fix patterns — shown when a previous operator told the bot
+        # "note the pattern" for this issue_type. Gives the approver instant context:
+        # "someone fixed this before by doing X, here's what they noted."
+        for p in (prior_patterns or [])[:2]:
+            pattern_text = p.get("pattern", "")
+            steps: list[str] = p.get("steps") or []
+            steps_chain = " \u2192 ".join(f"`{s}`" for s in steps[:4]) if steps else ""
+            preview_parts = []
+            if pattern_text:
+                preview_parts.append(pattern_text[:120])
+            if steps_chain:
+                preview_parts.append(f"*Steps:* {steps_chain}")
+            if preview_parts:
+                blocks.append({
+                    "type": "context",
+                    "elements": [{
+                        "type": "mrkdwn",
+                        "text": ":memo: *Operator noted:* " + "  \u00b7  ".join(preview_parts),
+                    }],
+                })
 
         # Device personality warnings
         for w in (personality_warnings or []):
