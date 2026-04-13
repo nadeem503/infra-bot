@@ -38,6 +38,9 @@ def _get_action_handler(action_type: str) -> type[BaseAction] | None:
     from bot.actions.db_action import DBAction  # noqa: PLC0415
     from bot.actions.device_status import DeviceStatusAction  # noqa: PLC0415
     from bot.actions.device_disconnected_action import DeviceDisconnectedAction  # noqa: PLC0415
+    from bot.actions.device_lifecycle_action import (  # noqa: PLC0415
+        DeviceDisposeAction, DeviceHostUpdateAction,
+    )
     from bot.actions.github_action import GitHubAction  # noqa: PLC0415
     from bot.actions.jenkins_action import JenkinsAction  # noqa: PLC0415
     from bot.actions.jira_action import JiraAction  # noqa: PLC0415
@@ -73,6 +76,9 @@ def _get_action_handler(action_type: str) -> type[BaseAction] | None:
         "rdtsa_restart":             RDTSARestartAction,
         "android_container_restart": AndroidContainerRestartAction,
         "host_service_status":       AllServicesStatusAction,
+        # Device lifecycle (GitHub Actions workflows)
+        "device_dispose":            DeviceDisposeAction,
+        "device_migrate":            DeviceHostUpdateAction,
     }.get(action_type)
 
 
