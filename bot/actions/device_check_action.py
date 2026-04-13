@@ -126,16 +126,16 @@ def _get_android_uptime(host: str, udid: str) -> str:
 
 
 def _lrr_health_summary(log_output: str) -> str:
-    """Parse LRR log and return a one-line health summary for Slack.
+    """Parse LRR log and return a bulleted health summary for Slack.
 
     Checks for ios-device-agent and LTApp status codes in the log.
-    Example: `:white_check_mark: ios-device-agent healthy  |  :white_check_mark: LTApp 200 OK`
+    Each check gets its own bullet line so it's readable at a glance.
     """
     log_low = log_output.lower()
 
     agent_ok = "ios-device-agent is healthy" in log_low
     agent_icon = ":white_check_mark:" if agent_ok else ":x:"
-    agent_label = "healthy" if agent_ok else "not healthy"
+    agent_label = "ios-device-agent healthy" if agent_ok else "ios-device-agent not healthy"
 
     ltapp_ok = (
         "ltapp response status code -> 200" in log_low
@@ -143,11 +143,12 @@ def _lrr_health_summary(log_output: str) -> str:
         or "200 ok" in log_low
     )
     ltapp_icon = ":white_check_mark:" if ltapp_ok else ":x:"
-    ltapp_label = "200 OK" if ltapp_ok else "not 200"
+    ltapp_label = "LTApp 200 OK" if ltapp_ok else "LTApp not 200"
 
     return (
-        f"*LRR Health:* {agent_icon} ios-device-agent {agent_label}"
-        f"  |  {ltapp_icon} LTApp {ltapp_label}"
+        f"*LRR Health:*\n"
+        f"  \u2022 {agent_icon} {agent_label}\n"
+        f"  \u2022 {ltapp_icon} {ltapp_label}"
     )
 
 
@@ -166,8 +167,11 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
         log_output = "..." + log_output[-_SLACK_LOG_MAX_CHARS:]
 
     uptime = _get_ios_uptime(host, udid)
+    # Strip the "device uptime: " prefix that the LRR log grep returns so we don't
+    # render "Device Uptime: device uptime: 68.96 hours" (redundant prefix).
+    uptime_clean = re.sub(r'^device uptime:\s*', '', uptime, flags=re.IGNORECASE)
     health = _lrr_health_summary(log_output)
-    uptime_line = f"*Device Uptime:* {uptime}"
+    uptime_line = f"*Device Uptime:* {uptime_clean}"
     log_block = f"*LRR log (last {log_lines} lines):*\n```{log_output}```"
 
     if count != "1":
