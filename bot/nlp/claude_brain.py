@@ -27,11 +27,14 @@ _QUOTA_MSG = (
 )
 
 # Claude CLI path on the bot host
-_CLAUDE_BIN = "/opt/homebrew/bin/claude"
-_KEYCHAIN_DB = "/Users/ltadmin/Library/Keychains/login.keychain-db"
+_CLAUDE_BIN   = "/opt/homebrew/bin/claude"
+_KEYCHAIN_DB  = "/Users/ltadmin/Library/Keychains/login.keychain-db"
+# Use Sonnet for classify (fast, cheap) — Opus is overkill for JSON routing
+_CLASSIFY_MODEL = "claude-sonnet-4-6"
 
-_keychain_unlocked = False  # unlocked once per process lifetime
-_keychain_lock = __import__("threading").Lock()  # guards _keychain_unlocked flag
+_keychain_unlocked = False   # unlocked once per process lifetime
+_keychain_failed  = False   # permanently skip after first failure (avoids per-call overhead)
+_keychain_lock = __import__("threading").Lock()
 
 
 def _ensure_keychain_unlocked() -> None:
@@ -40,10 +43,12 @@ def _ensure_keychain_unlocked() -> None:
     Idempotent — runs at most once per process. Required when bot starts
     as a background process (nohup/SSH) where keychain is locked.
     Password is passed via stdin (not -p flag) to avoid exposure in ps aux.
+    After a permanent failure the flag is set so we skip the attempt on
+    every subsequent call rather than retrying and adding latency.
     """
-    global _keychain_unlocked
+    global _keychain_unlocked, _keychain_failed
     with _keychain_lock:
-        if _keychain_unlocked:
+        if _keychain_unlocked or _keychain_failed:
             return
         try:
             passwd = settings.HOST_PASS or ""
@@ -56,9 +61,12 @@ def _ensure_keychain_unlocked() -> None:
                 logger.info("Keychain unlocked for Claude CLI")
                 _keychain_unlocked = True
             else:
-                logger.warning("Keychain unlock failed: %s", result.stderr.strip()[:100])
+                logger.warning("Keychain unlock failed (will not retry): %s",
+                               result.stderr.strip()[:100])
+                _keychain_failed = True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Keychain unlock error: %s", exc)
+            logger.warning("Keychain unlock error (will not retry): %s", exc)
+            _keychain_failed = True
 
 MODEL = "gemini-2.0-flash"
 
@@ -225,21 +233,26 @@ Remark → issue_category mapping:
 - "io.appium.uiautomator2.server" → app_crash
 - "screen_off_timeout" → adb_issue
 
-Intents: create_jira | assign_ticket | send_invite | infra_issue | unknown
+Intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | unknown
 
 issue_categories: device_down|reboot|adb_issue|network_issue|db_mismatch|jenkins_failure|
 app_crash|storage_issue|device_disconnected|lrr_down|resigner_down|ihm_down|reconciler_down|
 lrp_down|rmdm_down|rdtsa_down|android_container_down|cert_expired|host_service_status
 
+device_check intent: use when user says "check", "is it connected", "check now", "is it up".
+  params must include: "host":"10.x.x.x", "udid":"<serial>", "devices":["10.x.x.x","<serial>"]
+
 Return ONLY JSON:
 {"intent":"...","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],
-"ticket_key":"","issue_category":"","devices":[],"region":null,"host_type":null}}
+"ticket_key":"","issue_category":"","host":"","udid":"","devices":[],"region":null,"host_type":null,
+"hosts":[],"udids":[],"log_lines":20}}
 
 Rules:
 - UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). IPs: 10.151→ap, 10.100→dublin, 10.146→us
 - MISMATCH/device not found → device_disconnected
 - Slack IDs: <@U...> format, 11 chars starting with U
 - Use thread context for follow-up messages missing device info
+- For device_check: extract host IP and UDID/serial from message or thread context
 """
 
 # Root cause: only called for 3+ correlated signals
@@ -254,7 +267,25 @@ Use :rotating_light: for network/rack-level incidents.
 """
 
 
-_INFRA_BOT_DIR = str(__import__("pathlib").Path(__file__).parent.parent)  # working dir so project MCP config is loaded
+_INFRA_BOT_DIR = str(__import__("pathlib").Path(__file__).parent.parent)
+
+
+def _extract_first_json(text: str) -> dict | None:
+    """Return the first valid JSON object found in text, or None.
+
+    Uses json.JSONDecoder.raw_decode so it stops at the end of the first
+    complete object rather than greedily matching to the last closing brace.
+    """
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = decoder.raw_decode(text, i)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+    return None
 
 # Atlassian MCP tools available after OAuth auth
 _ATLASSIAN_MCP_TOOLS = [
@@ -272,11 +303,13 @@ def _call_claude_cli(
     timeout: int = 30,
     _log_action: str = "",
     allowed_tools: list[str] | None = None,
+    model: str | None = None,
 ) -> str:
     """Run claude -p <prompt> as subprocess. Returns stdout text or raises.
 
     allowed_tools: list of MCP/tool names to pass via --allowedTools.
                    If None, no --allowedTools flag is added (default behaviour).
+    model: Claude model ID to pass via --model. If None, CLI default is used.
     """
     import os
     _ensure_keychain_unlocked()
@@ -287,6 +320,8 @@ def _call_claude_cli(
         "LOGNAME": os.environ.get("LOGNAME", "ltadmin"),
     }
     cmd = [_CLAUDE_BIN, "-p", prompt]
+    if model:
+        cmd += ["--model", model]
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
     t0 = time.time()
@@ -343,14 +378,12 @@ def create_jira_via_mcp(
             _log_action="jira_mcp_create",
             allowed_tools=_ATLASSIAN_MCP_TOOLS,
         )
-        # Extract JSON from response
-        json_match = re.search(r'\{[^{}]*"key"[^{}]*\}', raw, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            if data.get("key"):
-                key = data["key"]
-                url = data.get("url", f"https://lambdatest.atlassian.net/browse/{key}")
-                return {"success": True, "key": key, "url": url}
+        # Extract first JSON object from response
+        data = _extract_first_json(raw)
+        if data and data.get("key"):
+            key = data["key"]
+            url = data.get("url", f"https://lambdatest.atlassian.net/browse/{key}")
+            return {"success": True, "key": key, "url": url}
         # If no JSON, check for error signals
         if "not logged in" in raw.lower() or "please run /login" in raw.lower():
             raise RuntimeError("Atlassian MCP not authenticated — run `claude` interactively and authenticate via /mcp")
@@ -411,16 +444,21 @@ class AIBrain:
         contents.append(types.Content(role="user", parts=[types.Part(text=text)]))
         return contents
 
-    def _call_with_retry(self, fn, retries: int = 2):
-        """Call fn(), retrying once after 60s on 429 quota errors."""
+    def _call_with_retry(self, fn, retries: int = 1):
+        """Call fn(). On 429 quota errors, fail fast — do NOT sleep.
+
+        Sleeping 60s on the Slack event handler thread blocks the entire
+        thread-pool slot and causes backpressure under load. Quota errors
+        reset on Gemini's own schedule; retrying immediately won't help.
+        """
         for attempt in range(retries):
             try:
                 return fn()
             except Exception as exc:  # noqa: BLE001
                 is_quota = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
-                if is_quota and attempt < retries - 1:
-                    logger.warning("Gemini 429 — waiting 60s before retry %d", attempt + 1)
-                    time.sleep(60)
+                if is_quota:
+                    raise  # surface immediately as _quota_exceeded
+                if attempt < retries - 1:
                     continue
                 raise
         return None
@@ -432,8 +470,12 @@ class AIBrain:
         Claude CLI can either classify (return structured params) or reply directly.
         Results cached 5 min.
         """
-        extra = str(len(thread_history)) if thread_history else ""
-        cache_key = self._cache_key("classify", text[:200], extra)
+        # Hash actual thread content (not just length) to avoid collisions
+        thread_ctx = ""
+        for msg in (thread_history or [])[-10:]:
+            role = "User" if msg.get("role") == "user" else "Bot"
+            thread_ctx += f"{role}: {msg['content']}\n"
+        cache_key = self._cache_key("classify", text[:200], thread_ctx[-200:])
         cached = self._cache_get(cache_key)
         if cached is not None:
             logger.debug("Classify cache hit")
@@ -441,11 +483,6 @@ class AIBrain:
 
         # ── Claude CLI (primary — free, uses ltadmin subscription) ───────────
         try:
-            thread_ctx = ""
-            for msg in (thread_history or [])[-10:]:
-                role = "User" if msg.get("role") == "user" else "Bot"
-                thread_ctx += f"{role}: {msg['content']}\n"
-
             thread_header = ("Thread context:\n" + thread_ctx) if thread_ctx else ""
             prompt = (
                 f"{CLAUDE_ROUTER_SYSTEM}\n\n"
@@ -453,16 +490,16 @@ class AIBrain:
                 f"Message: {text}\n\n"
                 f"Reply with ONLY valid JSON."
             )
-            raw = _call_claude_cli(prompt, timeout=30, _log_action="router")
+            raw = _call_claude_cli(prompt, timeout=30, _log_action="router",
+                                   model=_CLASSIFY_MODEL)
 
-            # Extract JSON from response
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    logger.warning("Claude returned invalid JSON, falling back to Gemini: %.200s", raw)
-                    return self.classify_gemini(text, thread_history)
+            # Extract first valid JSON object from response
+            parsed = _extract_first_json(raw)
+            if parsed is None:
+                logger.warning("Claude returned invalid JSON, falling back to Gemini: %.200s", raw)
+                return self.classify_gemini(text, thread_history)
+
+            if True:
                 action = parsed.get("action", "classify")
 
                 if action == "direct":
