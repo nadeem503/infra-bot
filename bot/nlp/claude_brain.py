@@ -136,7 +136,12 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    - remark: one of ["Device battery bloated","Device screen is not working",
      "Device needs to be repaired","Device is deprecated","others"] — map user words to these
    - where_status: space-separated status filter (default "active faulty maintenance")
-   IMPORTANT: if jira ticket is missing, use action=direct to ask "Please provide a Jira ticket ID (e.g. TE-12345 or TTN-12345) for audit trail."
+   IMPORTANT: if jira ticket is missing, use action=direct. Write a conversational reply that:
+     1. Confirms what you understood — device count, environment, remark/reason.
+        Example: "Got it — I'll mark 5 device(s) as *disposed* on *stage* (reason: battery bloated)."
+     2. Asks for Jira on the next line.
+        Example: "Before I proceed, please provide a *Jira ticket ID* (e.g. `TE-12345` or `TTN-12345`) for the audit trail. :memo:"
+     Use actual extracted values. Never use a bare standalone "Please provide a Jira ticket ID" sentence.
    IMPORTANT FOLLOW-UP: if the thread shows bot previously asked for Jira AND the current message
    looks like a Jira ID (e.g. "TE-11204", "TTN-9999"), treat this as a follow-up: extract jira from
    the current message AND re-extract ALL other params (UDIDs, host_ips, environment, dedicated_org,
@@ -158,7 +163,12 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    - remark: free text describing the migration reason
    - where_status: space-separated status filter (default "active faulty maintenance")
    - manual / automation / features: leave as "" unless explicitly specified
-   IMPORTANT: if jira ticket is missing, use action=direct to ask "Please provide a Jira ticket ID (e.g. TE-12345 or TTN-12345) for audit trail."
+   IMPORTANT: if jira ticket is missing, use action=direct. Write a conversational reply that:
+     1. Confirms what you understood — device count, environment, org change.
+        Example: "Got it — I can migrate these 13 devices to public cloud (`dedicated_org = NULL`) on *prod*."
+     2. Asks for Jira on the next line.
+        Example: "Before I proceed, please provide a *Jira ticket ID* (e.g. `TE-12345` or `TTN-12345`) for the audit trail. :memo:"
+     Use actual extracted values. Never use a bare standalone "Please provide a Jira ticket ID" sentence.
    IMPORTANT FOLLOW-UP: if the thread shows bot previously asked for Jira AND the current message
    looks like a Jira ID (e.g. "TE-11204", "TTN-9999"), treat this as a follow-up: extract jira from
    the current message AND re-extract ALL other params (udids, host_ips, environment, dedicated_org,
