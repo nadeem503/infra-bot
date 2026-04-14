@@ -79,8 +79,14 @@ def _normalize_remark(remark: str) -> str:
 
 
 def _workflow_ref(env: str) -> str:
-    """Map environment name to the correct git ref for workflow_dispatch."""
-    return "stage" if env.lower() == "stage" else "main"
+    """Return the git ref to use for workflow_dispatch.
+
+    LambdatestIncPrivate/migrations default branch is 'stage' — there is no
+    'main' branch. prod vs stage is controlled by the workflow's environment
+    input (which triggers GitHub Actions environment protection gates), not
+    by the branch. Always dispatch from the default 'stage' branch.
+    """
+    return "stage"
 
 
 # ── DeviceDisposeAction ─────────────────────────────────────────────────────
