@@ -59,10 +59,6 @@ AUTHORIZED_USER_IDS: frozenset[str] = frozenset({
     "U020L115A2X",  # Shivnarayan Shishodia
 })
 
-_UNAUTHORIZED_REPLY = (
-    ":robot_face: *Hey there!* I'm still in early access — not fully available to everyone just yet.\n"
-    "I'll be rolling out to the wider team soon. Stay tuned! :rocket:"
-)
 
 def _clean_slack_text(text: str) -> str:
     """Strip Slack markdown so regex/Claude can parse device IDs reliably.
@@ -746,7 +742,9 @@ def register_message_listeners(app: App) -> None:
 
         # --- Authorization check — only allowlisted users may trigger actions ---
         if user_id not in AUTHORIZED_USER_IDS:
-            say(text=_UNAUTHORIZED_REPLY, thread_ts=thread_ts)
+            clean_text = _clean_slack_text(text)
+            greeting = brain.generate_unauthorized_greeting(clean_text)
+            say(text=greeting, thread_ts=thread_ts)
             logger.warning("[%s] Unauthorized attempt by %s: %.100s", trace_id, user_id, text)
             return
 
@@ -944,7 +942,8 @@ def register_message_listeners(app: App) -> None:
         user_id: str = body["user"]["id"]
         channel: str = body["channel"]["id"]
         if user_id not in AUTHORIZED_USER_IDS:
-            client.chat_postMessage(channel=channel, text=_UNAUTHORIZED_REPLY)
+            greeting = brain.generate_unauthorized_greeting("(clicked a bot button)")
+            client.chat_postMessage(channel=channel, text=greeting)
             return
         message_ts: str = body["message"]["ts"]
         thread_ts: str = body["message"].get("thread_ts", message_ts)

@@ -724,6 +724,39 @@ class AIBrain:
 
         return ":mag: *Root Cause Analysis*\n• Multiple correlated signals — manual investigation recommended"
 
+    def generate_unauthorized_greeting(self, user_message: str) -> str:
+        """Return a friendly, context-aware reply for unauthorized users.
+
+        Uses Claude CLI to craft a warm response that acknowledges what the
+        user asked and explains the bot is in restricted access — without
+        being cold or robotic.  Falls back to a static reply if Claude fails.
+        """
+        prompt = (
+            "You are Infra-bot, a friendly infrastructure assistant for the LambdaTest mobile "
+            "infra team. A team member who is NOT yet on the authorized-users list has just "
+            "tagged you with the message below.\n\n"
+            "Write a short, warm Slack reply (2-3 sentences max) that:\n"
+            "1. Greets them by acknowledging what they asked / said.\n"
+            "2. Explains you're currently in restricted early access for the mobile-infra team.\n"
+            "3. Tells them you'll be rolling out to more of the team soon.\n"
+            "Use a friendly, slightly casual tone. Use 1-2 relevant emojis. "
+            "Do NOT mention 'unauthorized'. Do NOT use bullet points.\n\n"
+            f"User's message: {user_message}\n\n"
+            "Reply with ONLY the Slack message text, no JSON, no explanation."
+        )
+        try:
+            result = _call_claude_cli(prompt, timeout=20, _log_action="unauthorized_greeting")
+            if result and len(result) > 10:
+                return result.strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("generate_unauthorized_greeting failed: %s", exc)
+
+        # Static fallback
+        return (
+            ":robot_face: *Hey there!* I'm still in early access — not fully available to everyone just yet.\n"
+            "I'll be rolling out to the wider team soon. Stay tuned! :rocket:"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Template responses — replaces generate_response() for known action outcomes
