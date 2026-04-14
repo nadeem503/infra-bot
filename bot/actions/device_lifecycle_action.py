@@ -237,7 +237,7 @@ class DeviceHostUpdateAction(GitHubWorkflowAction):
         udids        = (self.params.get("udids") or "").strip()
         host_ips     = (self.params.get("host_ips") or "").strip()
         jira         = self.params.get("jira") or "TTN-?"
-        env          = (self.params.get("environment") or "stage").lower()
+        env          = (self.params.get("environment") or "stage").upper()
         status       = self.params.get("status") or ""
         dedicated_org = self.params.get("dedicated_org") or ""
         cleanup      = self.params.get("cleanup") or ""
@@ -297,7 +297,9 @@ class DeviceHostUpdateAction(GitHubWorkflowAction):
         udids        = _to_str(self.params.get("udids"))
         host_ips     = _to_str(self.params.get("host_ips"))
         jira         = _to_str(self.params.get("jira"))
-        env          = (_to_str(self.params.get("environment")) or "stage").lower()
+        # device-host workflow uses GitHub Actions `type: environment` — value must be
+        # uppercase to match the environment names configured in the repo (STAGE / PROD).
+        env          = (_to_str(self.params.get("environment")) or "stage").upper()
         status       = _to_str(self.params.get("status"))
         dedicated_org = _to_str(self.params.get("dedicated_org"))
         cleanup      = _to_str(self.params.get("cleanup"))

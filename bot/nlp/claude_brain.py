@@ -130,7 +130,8 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
      Build from host IPs and UDIDs mentioned in message/thread. Format MUST be "ip,udid" per device.
    - jira: Jira ticket ID — any format accepted: TE-XXXXX, TTN-XXXXX, TPI-XXXXX etc.
      Look in the CURRENT message first, then scan the ENTIRE thread for any "XX-NNNN" pattern.
-   - environment: "stage" | "prod" (default "stage"; infer from context or ask)
+   - environment: "stage" | "prod" (default "stage"; infer from context or ask).
+     "prod env", "production", "live" → "prod". "staging", "stage env" → "stage".
    - status: "disposed" | "inactive" (default "disposed")
    - remark: one of ["Device battery bloated","Device screen is not working",
      "Device needs to be repaired","Device is deprecated","others"] — map user words to these
@@ -149,7 +150,8 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    - host_ips: space-separated host IP list (for WHERE host_ip IN (...))
    - jira: Jira ticket ID — any format accepted: TE-XXXXX, TTN-XXXXX, TPI-XXXXX etc.
      Look in the CURRENT message first, then scan the ENTIRE thread for any "XX-NNNN" pattern.
-   - environment: "stage" | "prod" (default "stage")
+   - environment: "stage" | "prod" (default "stage"). Always lowercase — bot uppercases for workflow.
+     "prod env", "production", "live" → "prod". "staging", "stage env" → "stage".
    - dedicated_org: org ID (integer as string) or "NULL" if moving to public cloud
    - status: new status if changing (active|maintenance|faulty|disposed|inactive) or ""
    - cleanup: "full" | "dedicated" | "adaptive" or "" if not specified
