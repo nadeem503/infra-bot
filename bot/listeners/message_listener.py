@@ -484,7 +484,13 @@ def _handle_infra_issue(
                 logger.error("Auto-execute %s failed: %s", action_type, exc)
                 result = {"success": False, "message": f"Execution error: {type(exc).__name__}", "details": {}}
 
-            result_text = _formatter.format_result(action_type, result)
+            # For lifecycle workflow actions skip the generic "Action Completed: device_migrate"
+            # header from format_result — the action's own message already has all the detail
+            # and the workflow approval link.
+            if result.get("success"):
+                result_text = result.get("message", f":rocket: `{action_type}` triggered")
+            else:
+                result_text = _formatter.format_error(result.get("message", f"`{action_type}` failed"))
 
             # Notify mobile-infra team so they can track the GH Actions run
             notify_id = settings.MOBILE_INFRA_SLACK_ID
@@ -495,7 +501,7 @@ def _handle_infra_issue(
                     notify_mention = f"<#{notify_id}>"
                 else:                                  # user ID: <@U...>
                     notify_mention = f"<@{notify_id}>"
-                result_text += f"\n\n{notify_mention} FYI — workflow triggered, please monitor the run above."
+                result_text += f"\n\n{notify_mention} please review and approve the workflow run above."
 
             say(text=result_text, thread_ts=thread_ts)
             logger.info("Auto-executed %s for %s region=%s", action_type, issue_category, region_slug)

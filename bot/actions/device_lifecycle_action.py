@@ -184,9 +184,10 @@ class DeviceDisposeAction(GitHubWorkflowAction):
             udid_count = len([p for p in pairs.split() if p])
             runs_url   = result.get("runs_url", "")
             result["message"] = (
-                f":white_check_mark: Dispose workflow triggered — "
-                f"`{udid_count}` device(s) → `{status}` on `{env}`\n"
-                + (f"<{runs_url}|View workflow run>" if runs_url else "")
+                f":rocket: Dispose workflow triggered on `{env}` — "
+                f"`{udid_count}` device(s) → `{status}`\n"
+                f"• Jira: `{jira}`\n"
+                + (f"\n<{runs_url}|:ballot_box_with_check: Review & Approve Workflow Run>" if runs_url else "")
             )
         return result
 
@@ -356,8 +357,10 @@ class DeviceHostUpdateAction(GitHubWorkflowAction):
             changes_str = ", ".join(changes) if changes else "field update"
 
             result["message"] = (
-                f":white_check_mark: Device migration workflow triggered on `{env}` — "
-                f"`{target}` | {changes_str}\n"
-                + (f"<{runs_url}|View workflow run>" if runs_url else "")
+                f":rocket: Device migration workflow triggered on `{env}`\n"
+                f"• Devices: `{target}`\n"
+                f"• Changes: {changes_str}\n"
+                f"• Jira: `{jira}`\n"
+                + (f"\n<{runs_url}|:ballot_box_with_check: Review & Approve Workflow Run>" if runs_url else "")
             )
         return result
