@@ -81,12 +81,15 @@ def _normalize_remark(remark: str) -> str:
 def _workflow_ref(env: str) -> str:
     """Return the git ref to use for workflow_dispatch.
 
-    LambdatestIncPrivate/migrations default branch is 'stage' — there is no
-    'main' branch. prod vs stage is controlled by the workflow's environment
-    input (which triggers GitHub Actions environment protection gates), not
-    by the branch. Always dispatch from the default 'stage' branch.
+    LambdatestIncPrivate/migrations has two long-lived branches:
+      stage → stage execution
+      prod  → prod execution
+
+    Both the branch (ref) and the environment input must match:
+      stage env → ref=stage, environment=STAGE
+      prod env  → ref=prod,  environment=PROD
     """
-    return "stage"
+    return "prod" if env.upper() == "PROD" else "stage"
 
 
 # ── DeviceDisposeAction ─────────────────────────────────────────────────────
