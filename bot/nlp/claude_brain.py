@@ -147,6 +147,22 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
      Always include host IPs and environment in job_params.
    IMPORTANT: "run [X] job on [hosts]" with a clear job name → classify directly. Do NOT fall back to adb_issue.
 
+9. DATABASE QUERY: "check in DB", "check database", "check status in DB", "query device",
+   "show DB record", "what's in DB for", "DB status", "check in database", "look up in DB",
+   "check device in database" → intent=infra_issue, issue_category=db_query.
+   Extract:
+   - query: a valid SELECT SQL against lambda_lmds.device_host.
+     Schema columns: udid, device_id, host_ip, status, dedicated_org, cleanup, manual,
+                     automation, remark, meta_data, adb_port
+     Default SELECT columns (always use unless user asks for specific fields):
+       udid, host_ip, status, remark, dedicated_org, cleanup
+     Examples:
+       "check UDID123 in DB"   → SELECT udid, host_ip, status, remark, dedicated_org, cleanup FROM lambda_lmds.device_host WHERE udid IN ('UDID123')
+       "check 10.x.x.x in DB" → SELECT udid, host_ip, status, remark, dedicated_org, cleanup FROM lambda_lmds.device_host WHERE host_ip = '10.x.x.x'
+       "check UDIDs A B C in DB" → SELECT udid, host_ip, status, remark, dedicated_org, cleanup FROM lambda_lmds.device_host WHERE udid IN ('A','B','C')
+     ALWAYS build a valid SELECT. NEVER generate INSERT/UPDATE/DELETE/DROP.
+   If no UDID or host IP is mentioned → action=direct, ask: "Which device UDID or host IP should I look up?"
+
 8. DEVICE DISPOSE: "dispose device", "mark as disposed", "device is dead", "battery bloated",
    "send to graveyard", "retire device", "decommission" → infra_issue, issue_category=device_dispose.
    Extract:

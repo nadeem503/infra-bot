@@ -37,6 +37,7 @@ _ISSUE_LABELS: dict[str, str] = {
     "app_crash":              ":bug: App Crash Detected",
     "jenkins_failure":        ":construction: Jenkins Job Failed",
     "db_mismatch":            ":bar_chart: DB Mismatch Detected",
+    "db_query":               ":mag: Database Query Result",
     "device_dispose":         ":coffin: Device Dispose Request",
     "device_migrate":         ":truck: Device Migration / Org Assignment",
 }
@@ -301,6 +302,62 @@ class SlackFormatter:
         if details.get("url"):
             text += f"\n<{details['url']}|View ticket>"
         return text
+
+    def format_db_result(self, result: dict) -> str:
+        """Format DBAction rows as a readable Slack table.
+
+        Renders each row as a bullet with key=value pairs on one line.
+        Highlights status with an icon. Caps at 20 rows to avoid message bloat.
+        """
+        details = result.get("details", {})
+        rows: list[dict] = details.get("rows") or []
+        query_preview = details.get("query_preview", "")
+
+        if not result.get("success"):
+            return self.format_error(result.get("message", "DB query failed"))
+
+        if not rows:
+            return ":mag: *DB Query* — no rows matched.\n" + (f"```{query_preview}```" if query_preview else "")
+
+        _STATUS_ICONS = {
+            "active":      ":large_green_circle:",
+            "faulty":      ":red_circle:",
+            "maintenance": ":large_yellow_circle:",
+            "disposed":    ":black_circle:",
+            "inactive":    ":white_circle:",
+            "busy":        ":large_blue_circle:",
+        }
+
+        lines = [f":mag: *DB Query — {len(rows)} row(s)*"]
+        if query_preview:
+            lines.append(f"```{query_preview}```")
+
+        display_rows = rows[:20]
+        for row in display_rows:
+            status = str(row.get("status", "")).lower()
+            s_icon = _STATUS_ICONS.get(status, ":grey_question:")
+            # Build concise field list — skip None/empty values
+            fields = []
+            col_order = ["udid", "host_ip", "status", "dedicated_org", "cleanup", "remark"]
+            # Add any extra columns the query returned that aren't in col_order
+            for k in row:
+                if k not in col_order:
+                    col_order.append(k)
+            for k in col_order:
+                v = row.get(k)
+                if v is None or v == "":
+                    continue
+                # Truncate long remark values
+                v_str = str(v)
+                if k == "remark" and len(v_str) > 60:
+                    v_str = v_str[:57] + "…"
+                fields.append(f"`{k}`: {v_str}")
+            lines.append(f"{s_icon}  " + "  ·  ".join(fields))
+
+        if len(rows) > 20:
+            lines.append(f"_… and {len(rows) - 20} more row(s) — check bot logs for full result_")
+
+        return "\n".join(lines)
 
     def format_denied(self, action_type: str, denier_id: str) -> str:
         return f":no_entry: Action `{action_type}` was denied by <@{denier_id}>"

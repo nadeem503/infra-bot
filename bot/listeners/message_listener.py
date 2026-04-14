@@ -49,7 +49,7 @@ CONFIDENCE_THRESHOLD = 0.6
 # Action types that skip the bot approval card and execute immediately.
 # The GitHub Actions workflow itself has environment protection gates for prod approval.
 # After triggering, the bot notifies MOBILE_INFRA_SLACK_ID for awareness.
-_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate"})
+_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate", "db_query"})
 
 # Only these users may trigger infra actions (device checks, restarts, Jira, etc.)
 # All other users receive greetings/capability replies only.
@@ -239,6 +239,7 @@ ISSUE_TO_ACTION: dict[str, str] = {
     "adb_issue":                "adb_restart",
     "network_issue":            "device_status",
     "db_mismatch":              "db_query",
+    "db_query":                 "db_query",
     "jenkins_failure":          "jenkins_trigger",
     "jenkins_trigger":          "jenkins_trigger",
     "app_crash":                "adb_logcat",
@@ -480,6 +481,13 @@ def _handle_infra_issue(
             except Exception as exc:  # noqa: BLE001
                 logger.error("Auto-execute %s failed: %s", action_type, exc)
                 result = {"success": False, "message": f"Execution error: {type(exc).__name__}", "details": {}}
+
+            # db_query: format rows as a Slack table (no mobile-infra notification needed)
+            if action_type == "db_query":
+                result_text = _formatter.format_db_result(result)
+                say(text=result_text, thread_ts=thread_ts)
+                logger.info("Auto-executed %s for %s region=%s", action_type, issue_category, region_slug)
+                return f"[Auto-executed] `{action_type}` for `{issue_category}` in {region_slug}"
 
             # For lifecycle workflow actions skip the generic "Action Completed: device_migrate"
             # header from format_result — the action's own message already has all the detail
