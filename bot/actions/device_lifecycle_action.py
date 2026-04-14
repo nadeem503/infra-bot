@@ -55,6 +55,20 @@ _REMARK_ALIASES: dict[str, str] = {
 }
 
 
+def _to_str(v) -> str:
+    """Safely coerce a param value to a stripped string.
+
+    Claude sometimes returns a list instead of a space-separated string
+    (e.g. udids=["UDID1","UDID2"] instead of "UDID1 UDID2").
+    Joining with a space keeps the existing split-on-whitespace logic intact.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return " ".join(str(x) for x in v).strip()
+    return str(v).strip()
+
+
 def _normalize_remark(remark: str) -> str:
     """Map user-supplied remark to a valid workflow choice option."""
     if not remark:
@@ -130,12 +144,12 @@ class DeviceDisposeAction(GitHubWorkflowAction):
         )
 
     def execute(self) -> dict:
-        pairs        = (self.params.get("host_udid_pairs") or "").strip()
-        jira         = (self.params.get("jira") or "").strip()
-        env          = (self.params.get("environment") or "stage").lower()
-        status       = self.params.get("status") or "disposed"
-        remark       = _normalize_remark(self.params.get("remark") or "")
-        where_status = self.params.get("where_status") or "active faulty maintenance"
+        pairs        = _to_str(self.params.get("host_udid_pairs"))
+        jira         = _to_str(self.params.get("jira"))
+        env          = (_to_str(self.params.get("environment")) or "stage").lower()
+        status       = _to_str(self.params.get("status")) or "disposed"
+        remark       = _normalize_remark(_to_str(self.params.get("remark")))
+        where_status = _to_str(self.params.get("where_status")) or "active faulty maintenance"
 
         if not pairs:
             return {
@@ -273,18 +287,18 @@ class DeviceHostUpdateAction(GitHubWorkflowAction):
         )
 
     def execute(self) -> dict:
-        udids        = (self.params.get("udids") or "").strip()
-        host_ips     = (self.params.get("host_ips") or "").strip()
-        jira         = (self.params.get("jira") or "").strip()
-        env          = (self.params.get("environment") or "stage").lower()
-        status       = self.params.get("status") or ""
-        dedicated_org = self.params.get("dedicated_org") or ""
-        cleanup      = self.params.get("cleanup") or ""
-        remark       = self.params.get("remark") or ""
-        where_status = self.params.get("where_status") or "active faulty maintenance"
-        manual       = self.params.get("manual") or ""
-        automation   = self.params.get("automation") or ""
-        features     = self.params.get("features") or ""
+        udids        = _to_str(self.params.get("udids"))
+        host_ips     = _to_str(self.params.get("host_ips"))
+        jira         = _to_str(self.params.get("jira"))
+        env          = (_to_str(self.params.get("environment")) or "stage").lower()
+        status       = _to_str(self.params.get("status"))
+        dedicated_org = _to_str(self.params.get("dedicated_org"))
+        cleanup      = _to_str(self.params.get("cleanup"))
+        remark       = _to_str(self.params.get("remark"))
+        where_status = _to_str(self.params.get("where_status")) or "active faulty maintenance"
+        manual       = _to_str(self.params.get("manual"))
+        automation   = _to_str(self.params.get("automation"))
+        features     = _to_str(self.params.get("features"))
 
         if not udids and not host_ips:
             return {
