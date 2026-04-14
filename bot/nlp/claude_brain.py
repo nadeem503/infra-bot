@@ -128,13 +128,18 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    Extract:
    - host_udid_pairs: space-separated "host_ip,udid" string (e.g. "10.151.1.1,UDID1 10.151.1.2,UDID2")
      Build from host IPs and UDIDs mentioned in message/thread. Format MUST be "ip,udid" per device.
-   - jira: Jira ticket ID (required — ask if missing; user must provide TTN-XXXXX)
+   - jira: Jira ticket ID — any format accepted: TE-XXXXX, TTN-XXXXX, TPI-XXXXX etc.
+     Look in the CURRENT message first, then scan the ENTIRE thread for any "XX-NNNN" pattern.
    - environment: "stage" | "prod" (default "stage"; infer from context or ask)
    - status: "disposed" | "inactive" (default "disposed")
    - remark: one of ["Device battery bloated","Device screen is not working",
      "Device needs to be repaired","Device is deprecated","others"] — map user words to these
    - where_status: space-separated status filter (default "active faulty maintenance")
-   IMPORTANT: if jira ticket is missing, use action=direct to ask "Please provide a Jira ticket ID (e.g. TTN-12345) for audit trail."
+   IMPORTANT: if jira ticket is missing, use action=direct to ask "Please provide a Jira ticket ID (e.g. TE-12345 or TTN-12345) for audit trail."
+   IMPORTANT FOLLOW-UP: if the thread shows bot previously asked for Jira AND the current message
+   looks like a Jira ID (e.g. "TE-11204", "TTN-9999"), treat this as a follow-up: extract jira from
+   the current message AND re-extract ALL other params (UDIDs, host_ips, environment, dedicated_org,
+   etc.) from the thread context. Do NOT ask for Jira again.
 
 8. DEVICE MIGRATION / ORG ASSIGNMENT: "move device to org", "assign to private cloud",
    "migrate device", "move to public cloud", "update dedicated_org", "org assignment",
@@ -142,7 +147,8 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    Extract:
    - udids: space-separated UDID list (for WHERE udid IN (...))
    - host_ips: space-separated host IP list (for WHERE host_ip IN (...))
-   - jira: Jira ticket ID (required)
+   - jira: Jira ticket ID — any format accepted: TE-XXXXX, TTN-XXXXX, TPI-XXXXX etc.
+     Look in the CURRENT message first, then scan the ENTIRE thread for any "XX-NNNN" pattern.
    - environment: "stage" | "prod" (default "stage")
    - dedicated_org: org ID (integer as string) or "NULL" if moving to public cloud
    - status: new status if changing (active|maintenance|faulty|disposed|inactive) or ""
@@ -150,7 +156,11 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    - remark: free text describing the migration reason
    - where_status: space-separated status filter (default "active faulty maintenance")
    - manual / automation / features: leave as "" unless explicitly specified
-   IMPORTANT: if jira ticket is missing, use action=direct to ask for it.
+   IMPORTANT: if jira ticket is missing, use action=direct to ask "Please provide a Jira ticket ID (e.g. TE-12345 or TTN-12345) for audit trail."
+   IMPORTANT FOLLOW-UP: if the thread shows bot previously asked for Jira AND the current message
+   looks like a Jira ID (e.g. "TE-11204", "TTN-9999"), treat this as a follow-up: extract jira from
+   the current message AND re-extract ALL other params (udids, host_ips, environment, dedicated_org,
+   etc.) from the thread context. Do NOT ask for Jira again.
    IMPORTANT: "move to public cloud" / "remove from org" → dedicated_org="NULL"
 
 9. NOTE PATTERN / MARK FIXED: "note the pattern", "this is fixed", "fixed nothing to do",
