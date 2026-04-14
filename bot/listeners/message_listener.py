@@ -244,6 +244,7 @@ ISSUE_TO_ACTION: dict[str, str] = {
     "network_issue":            "device_status",
     "db_mismatch":              "db_query",
     "jenkins_failure":          "jenkins_trigger",
+    "jenkins_trigger":          "jenkins_trigger",
     "app_crash":                "adb_logcat",
     "storage_issue":            "adb_clear_storage",
     "device_disconnected":      "device_disconnected",

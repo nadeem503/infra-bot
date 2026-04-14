@@ -123,7 +123,31 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
    NEVER set host to a UDID string. If thread context has a UDID, always pass it as "udid", not "host".
    If no specific UDID is mentioned but thread has one, use it — do NOT leave udid blank.
 
-7. DEVICE DISPOSE: "dispose device", "mark as disposed", "device is dead", "battery bloated",
+7. JENKINS JOB TRIGGER: "run [job] job", "trigger [job]", "execute jenkins", "kick off jenkins",
+   "run DSA job", "run sanity", "run device check", "run reboot job", "fire jenkins" →
+   intent=infra_issue, issue_category=jenkins_trigger.
+   Extract:
+   - job_name: the Jenkins job name. Map common aliases:
+       "DSA android" / "DSA" / "device sanity android" → ask user for exact job name if not in known list
+       "sanity" / "devops sanity" → "realdevice-run-devops-sanity"
+       "device check" → "realdevice-device-check"
+       "restart container" / "android container" → "realdevice-restart-android-container"
+       "reboot job" / "device reboot" → "realdevice-device-reboot"
+       "reset proxy" → "realdevice-reset-proxy"
+       "gnirehtet" / "apk install" → "realdevice-ubuntu-gnirehtet-apk-install-prod"
+       "ucturbo" → "realdevice-ubuntu-install-ucturbo"
+       "screenshot android" → "realdevice-takescreen-android-devices"
+       "screenshot ios" → "realdevice-takescreen-ios-devices"
+       "android uptime" → "realdevice-android-uptime"
+     If the job name is ambiguous or NOT in the known list above, use action=direct to ask:
+     "Which Jenkins job would you like to run? Known jobs: [list]"
+   - host_ips: space-separated host IPs from message/thread (used as job parameter)
+   - environment: "stage" | "prod" (default "stage"; infer from context)
+   - job_params: JSON object of additional job parameters if mentioned (e.g. {"HOST_IP": "10.x.x.x", "ENV": "PROD"})
+     Always include host IPs and environment in job_params.
+   IMPORTANT: "run [X] job on [hosts]" with a clear job name → classify directly. Do NOT fall back to adb_issue.
+
+8. DEVICE DISPOSE: "dispose device", "mark as disposed", "device is dead", "battery bloated",
    "send to graveyard", "retire device", "decommission" → infra_issue, issue_category=device_dispose.
    Extract:
    - host_udid_pairs: space-separated "host_ip,udid" string (e.g. "10.151.1.1,UDID1 10.151.1.2,UDID2")
