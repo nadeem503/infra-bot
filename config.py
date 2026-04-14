@@ -50,6 +50,11 @@ class Settings:
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
     DB_NAME: str = os.getenv("DB_NAME", "")
     DB_PORT: int = int(os.getenv("DB_PORT", "3306"))
+    # SSH tunnel to reach DB (set when DB is not directly reachable from the bot host)
+    DB_TUNNEL_HOST: str = os.getenv("DB_TUNNEL_HOST", "")
+    DB_TUNNEL_PORT: int = int(os.getenv("DB_TUNNEL_PORT", "22"))
+    DB_TUNNEL_USER: str = os.getenv("DB_TUNNEL_USER", "")
+    DB_TUNNEL_PASS: str = os.getenv("DB_TUNNEL_PASS", "")
 
     # Jira
     JIRA_EMAIL: str = os.getenv("JIRA_EMAIL", "")

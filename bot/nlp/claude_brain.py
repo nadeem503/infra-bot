@@ -149,19 +149,29 @@ NEVER guess and run the wrong action. Examples of ambiguous messages:
 
 9. DATABASE QUERY: "check in DB", "check database", "check status in DB", "query device",
    "show DB record", "what's in DB for", "DB status", "check in database", "look up in DB",
-   "check device in database" → intent=infra_issue, issue_category=db_query.
+   "check device in database", "db check" → intent=infra_issue, issue_category=db_query.
    Extract:
    - query: a valid SELECT SQL against lambda_lmds.device_host.
-     Schema columns: udid, device_id, host_ip, status, dedicated_org, cleanup, manual,
-                     automation, remark, meta_data, adb_port
+     Full schema: udid, device_id, host_ip, name, os, os_version, status, dedicated_org,
+                  cleanup, manual, automation, features, remark, region, meta_data,
+                  adb_port, updated_at
+     status values: active, busy, cleanup, faulty, maintenance, inactive, disposed
+     os values: android, ios, fireos, tvos, roku, androidtv
+     cleanup values: full, dedicated, adaptive
+     region values: us-west-1, us-west-2, eu-west-1, ap-south-1, ap-south-2
+     dedicated_org: NULL = public cloud, else org ID integer
      Default SELECT columns (always use unless user asks for specific fields):
-       udid, host_ip, status, remark, dedicated_org, cleanup
+       udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at
      Examples:
-       "check UDID123 in DB"   → SELECT udid, host_ip, status, remark, dedicated_org, cleanup FROM lambda_lmds.device_host WHERE udid IN ('UDID123')
-       "check 10.x.x.x in DB" → SELECT udid, host_ip, status, remark, dedicated_org, cleanup FROM lambda_lmds.device_host WHERE host_ip = '10.x.x.x'
-       "check UDIDs A B C in DB" → SELECT udid, host_ip, status, remark, dedicated_org, cleanup FROM lambda_lmds.device_host WHERE udid IN ('A','B','C')
+       "check UDID123 in DB"        → SELECT udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at FROM lambda_lmds.device_host WHERE udid IN ('UDID123')
+       "check 10.x.x.x in DB"      → SELECT udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at FROM lambda_lmds.device_host WHERE host_ip = '10.x.x.x'
+       "check UDIDs A B C in DB"   → SELECT udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at FROM lambda_lmds.device_host WHERE udid IN ('A','B','C')
+       "faulty iOS devices in DB"  → SELECT udid, host_ip, os, os_version, status, remark, dedicated_org, region FROM lambda_lmds.device_host WHERE os='ios' AND status='faulty' AND dedicated_org IS NULL LIMIT 20
+       "device status for org 1234" → SELECT udid, host_ip, status, remark, cleanup FROM lambda_lmds.device_host WHERE dedicated_org='1234'
      ALWAYS build a valid SELECT. NEVER generate INSERT/UPDATE/DELETE/DROP.
-   If no UDID or host IP is mentioned → action=direct, ask: "Which device UDID or host IP should I look up?"
+     Always add LIMIT 50 unless user asks for an aggregate (COUNT/GROUP BY).
+   If no UDID, host IP, or clear filter is mentioned → action=direct, ask:
+     "Which device UDID or host IP should I look up in the DB?"
 
 8. DEVICE DISPOSE: "dispose device", "mark as disposed", "device is dead", "battery bloated",
    "send to graveyard", "retire device", "decommission" → infra_issue, issue_category=device_dispose.
