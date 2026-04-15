@@ -194,6 +194,13 @@ Params:
     dedicated_org: NULL = public cloud, else org ID integer
     Default SELECT columns: udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at
     Always LIMIT 50 unless aggregate (COUNT/GROUP BY). NEVER INSERT/UPDATE/DELETE/DROP.
+    CRITICAL — filter priority:
+      1. If message contains a UDID → always use WHERE udid = '<udid>'  (NEVER ignore a UDID in the message)
+      2. If message contains a host IP → WHERE host_ip = '<ip>'
+      3. "check status" / "device status" WITH a UDID present → SELECT udid, host_ip, status, remark FROM device_host WHERE udid = '<udid>'
+         Do NOT add any extra WHERE status = '...' clause — the user wants to SEE the status, not filter by it
+      4. Valid status values ONLY: active, busy, cleanup, faulty, maintenance, inactive, disposed
+         NEVER use 'offline', 'online', or any unlisted value as a filter
   If no clear filter (UDID/IP/org/status) → action=direct, ask what to look up.
 
 -- DEVICE DISPOSE (intent=infra_issue, issue_category=device_dispose) --
