@@ -92,4 +92,8 @@ if __name__ == "__main__":
     handler = SocketModeHandler(app, settings.SLACK_APP_TOKEN)
 
     logger.info("Infra-Bot is running in Socket Mode")
-    handler.start()
+    try:
+        handler.start()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("SocketModeHandler crashed: %s — exiting for watchdog restart", exc)
+        raise SystemExit(1) from exc
