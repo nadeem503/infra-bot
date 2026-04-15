@@ -86,9 +86,6 @@ class DBAction(BaseAction):
 
     def _run_via_tunnel(self, query: str, pymysql) -> list[dict]:
         """Open SSH tunnel then run the query."""
-        import paramiko  # noqa: PLC0415 — patch before sshtunnel reads paramiko
-        if not hasattr(paramiko, "DSsKey"):
-            paramiko.DSsKey = paramiko.DSSKey  # sshtunnel compat with newer paramiko
         from sshtunnel import SSHTunnelForwarder  # noqa: PLC0415
 
         logger.info(
