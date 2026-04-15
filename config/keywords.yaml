@@ -115,14 +115,13 @@ lrr_down:
     - "lrr not running"
     - "lrr crashed"
     - "lrr down"
-    - "device not visible"
     - "idevice_id empty"
   severity: high
   auto_action: lrr_restart
   host_type: macos
   # Restart: launchctl unload/load /Library/LaunchDaemons/com.lambda.lambda_remote_runner_<UDID>.plist
 
-resigner_down:
+resigner_plist_down:
   keywords:
     - "resigner"
     - "ios resigner"
@@ -135,7 +134,7 @@ resigner_down:
     - "resigner failed"
     - "signing failed"
   severity: high
-  auto_action: resigner_restart
+  auto_action: resigner_plist_restart
   host_type: macos
   # Health check: curl http://HOST:6789/health
   # Restart: launchctl unload/load /Library/LaunchDaemons/com.lambda.ios_resigner.plist
