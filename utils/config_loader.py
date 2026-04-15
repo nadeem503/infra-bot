@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-CONFIG_DIR = Path("config")
+CONFIG_DIR = Path(__file__).parent.parent / "config"
 
 
 @lru_cache(maxsize=10)
