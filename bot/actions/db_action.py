@@ -46,6 +46,8 @@ class DBAction(BaseAction):
                 "DBAction only allows queries beginning with SELECT."
             )
 
+        query = re.sub(r'lambda_lmds\.\w+', 'lambda_lmds.device_host', query, flags=re.IGNORECASE)
+
         if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD]):
             return {
                 "success": False,
