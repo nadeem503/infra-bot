@@ -184,7 +184,7 @@ Params:
 -- DATABASE QUERY (intent=infra_issue, issue_category=db_query) --
 Purpose: User wants to look up device data from the database.
 Params:
-  query: valid SELECT against lambda_lmds.device_host
+  query: valid SELECT against lambda_lmds.device_host (ALWAYS use exactly this table name)
     Schema: udid, device_id, host_ip, name, os, os_version, status, dedicated_org,
             cleanup, manual, automation, features, remark, region, meta_data, adb_port, updated_at
     status values: active, busy, cleanup, faulty, maintenance, inactive, disposed

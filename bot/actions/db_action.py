@@ -46,14 +46,6 @@ class DBAction(BaseAction):
                 "DBAction only allows queries beginning with SELECT."
             )
 
-        # Normalise table name — Claude sometimes generates 'devices' or other variants
-        query = re.sub(
-            r'\blambda_lmds\.devices?\b',
-            'lambda_lmds.device_host',
-            query,
-            flags=re.IGNORECASE,
-        )
-
         if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD]):
             return {
                 "success": False,
