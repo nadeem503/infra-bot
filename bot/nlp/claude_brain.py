@@ -81,7 +81,7 @@ _ROOT_CAUSE_CACHE_TTL = 600
 CLAUDE_ROUTER_SYSTEM = """
 You are Infra-Bot, a Slack assistant for LambdaTest's Real Device Cloud infrastructure team.
 
-Read the Slack message and choose ONE of three actions:
+Read the Slack message and choose ONE of four actions:
 
 ACTION 1 — classify: The message maps clearly to a single structured bot action.
 Use this for device checks, service restarts, Jira tasks, ADB issues, reboots, etc.
@@ -92,13 +92,34 @@ capability questions, monitoring requests, or anything that is NOT a single clea
 Also use this when the message is AMBIGUOUS — ask a short clarification question instead
 of guessing. Example: "Did you want me to *reboot* the device, or just *check* if it's connected?"
 
-ACTION 3 — AMBIGUITY RULE (most important): When a message could mean more than one action,
-or you are not sure which action the user wants, ALWAYS use action=direct to ask first.
-NEVER guess and run the wrong action. Examples of ambiguous messages:
+ACTION 3 — AMBIGUITY RULE (most important): When a message could mean more than one action
+AND the sequence is not explicit (i.e. user didn't clearly say "do X AND Y"), use action=direct
+to ask first. NEVER guess and run the wrong action. Examples:
 - "reboot and check if up" → ask: reboot first, then check? or just check current state?
-- "monitor and let me know when back" → monitoring isn't supported; use direct to explain and suggest
+- "monitor and let me know when back" → monitoring isn't supported; use direct to explain
 - "fix the device" → ask: what specifically? reboot, check connectivity, restart LRR?
 - "do something about this device" → ask what action they want
+
+ACTION 4 — multi: Use ONLY when the message EXPLICITLY requests 2+ actions in clear sequence
+with an "and"/"then"/"also"/"proceed with" connector AND the actions are unambiguous.
+Examples that qualify:
+- "create a jira and dispose the device" → create_jira then device_dispose
+- "raise a ticket and proceed with migration" → create_jira then device_migrate
+- "create ticket and mark device disposed" → create_jira then device_dispose
+- "create jira for same, proceed with same ticket and mark disposed" → create_jira then device_dispose
+
+Format for action=multi:
+{"action":"multi","actions":[
+  {"intent":"create_jira","params":{"title":"...","description":"..."}},
+  {"intent":"infra_issue","issue_category":"device_dispose","params":{"host_udid_pairs":"...","environment":"prod","jira":"__from_jira__"}}
+]}
+Use "__from_jira__" as the jira param value when a later action needs the ticket key that will
+be created by an earlier create_jira step. The executor will substitute it automatically.
+Supported sequences:
+- create_jira → device_dispose  (jira="__from_jira__")
+- create_jira → device_migrate  (jira="__from_jira__")
+- create_jira → infra_issue (any) (jira="__from_jira__" if needed)
+Do NOT use action=multi for ambiguous chains — use action=direct to clarify first.
 
 == PRIORITY RULES ==
 1. JIRA CREATION: "create ticket/jira/task/issue", "raise/file/log/open a ticket" → ALWAYS
@@ -631,6 +652,22 @@ class AIBrain:
                     log_claude_call(prompt[:120], reply[:200], 0, True,
                                     action="direct", intent="_direct_reply")
                     logger.info("Claude CLI direct reply (len=%d)", len(reply))
+                    self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
+                    return result
+
+            elif action == "multi":
+                # Claude identified multiple sequential actions
+                actions_list = parsed.get("actions", [])
+                if actions_list:
+                    result = {
+                        "intent": "_multi_action",
+                        "confidence": 1.0,
+                        "params": {"actions": actions_list},
+                        "_source": "claude",
+                    }
+                    log_claude_call(prompt[:120], str(actions_list)[:200], 0, True,
+                                    action="multi", intent="_multi_action")
+                    logger.info("Claude CLI multi-action: %d steps", len(actions_list))
                     self._cache_set(cache_key, result, _CLASSIFY_CACHE_TTL)
                     return result
 

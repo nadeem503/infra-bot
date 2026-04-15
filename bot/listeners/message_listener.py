@@ -387,6 +387,65 @@ def _exec_assign_ticket(params: dict, slack_client=None) -> dict:
     return result
 
 
+def _handle_multi_action(
+    actions: list[dict],
+    text: str,
+    channel: str,
+    thread_ts: str,
+    user_id: str,
+    say,
+    client,
+    trace_id: str = "",
+) -> str:
+    """Execute multiple actions in sequence, piping outputs (e.g. jira_key) between steps.
+
+    Sentinel values in params:
+      "__from_jira__" → replaced with the Jira key produced by a preceding create_jira step.
+
+    For infra_issue steps: _handle_infra_issue() calls say() internally (auto-execute),
+    so we don't double-post.  For create_jira steps: we post the result here.
+    """
+    context: dict = {}   # carries outputs between steps, e.g. {"jira_key": "TE-12345"}
+
+    for i, step in enumerate(actions):
+        intent  = step.get("intent", "")
+        params  = dict(step.get("params") or {})
+        issue_category = step.get("issue_category") or params.get("issue_category", "")
+
+        # Resolve sentinels — substitute outputs from previous steps
+        for k, v in params.items():
+            if v == "__from_jira__":
+                params[k] = context.get("jira_key", "")
+
+        logger.info("[%s] Multi-action step %d/%d: intent=%s", trace_id, i + 1, len(actions), intent)
+
+        if intent == "create_jira":
+            result = _exec_create_jira(params, slack_client=client)
+            if result.get("success"):
+                jira_key = result.get("key", "")
+                context["jira_key"] = jira_key
+                # Post the Jira creation result
+                try:
+                    blocks = _format_jira_created_blocks(result)
+                    say(blocks=blocks, text=_jira_created_reply(result), thread_ts=thread_ts)
+                except Exception:  # noqa: BLE001
+                    say(text=_jira_created_reply(result), thread_ts=thread_ts)
+            else:
+                say(text=_jira_created_reply(result), thread_ts=thread_ts)
+                logger.error("[%s] Multi-action: create_jira failed at step %d — stopping chain", trace_id, i + 1)
+                return f"[Multi-action] stopped at step {i + 1}: create_jira failed"
+
+        elif intent == "infra_issue":
+            if issue_category:
+                params["issue_category"] = issue_category
+            _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client, trace_id=trace_id)
+
+        else:
+            logger.warning("[%s] Multi-action: unsupported intent %s at step %d", trace_id, intent, i + 1)
+
+    return f"[Multi-action] {len(actions)} steps completed"
+
+
 def _handle_infra_issue(
     params: dict,
     text: str,
@@ -876,6 +935,16 @@ def register_message_listeners(app: App) -> None:
                 "[%s] Low confidence (%.2f) — clarification card posted (intent=%s)",
                 trace_id, confidence, intent,
             )
+            return
+
+        # --- Multi-action: execute sequential steps, piping outputs between them ---
+        if intent == "_multi_action":
+            actions_list = params.get("actions", [])
+            logger.info("[%s] Multi-action: %d steps", trace_id, len(actions_list))
+            bot_reply = _handle_multi_action(
+                actions_list, text, channel, thread_ts, user_id, say, client, trace_id=trace_id
+            )
+            thread_memory.add_message(channel, thread_ts, "assistant", f"[executed {len(actions_list)} actions]")
             return
 
         # --- Claude direct reply — Claude handled it intelligently, post as-is ---
