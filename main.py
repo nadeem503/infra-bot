@@ -92,6 +92,25 @@ if __name__ == "__main__":
     handler = SocketModeHandler(app, settings.SLACK_APP_TOKEN)
 
     logger.info("Infra-Bot is running in Socket Mode")
+
+    # BrokenPipeError loop detector — if >5 pipe errors in 60s, exit so watchdog restarts
+    import threading, time as _time  # noqa: E401
+    _pipe_errors: list[float] = []
+    _original_error_handler = app.error
+
+    @app.error
+    def _pipe_guard(error):
+        if isinstance(error, BrokenPipeError):
+            now = _time.monotonic()
+            _pipe_errors.append(now)
+            # Keep only errors in the last 60s
+            _pipe_errors[:] = [t for t in _pipe_errors if now - t < 60]
+            if len(_pipe_errors) > 5:
+                logger.error("BrokenPipeError loop detected (%d errors in 60s) — exiting for watchdog restart", len(_pipe_errors))
+                threading.Thread(target=lambda: (_time.sleep(1), os._exit(1)), daemon=True).start()
+        if _original_error_handler:
+            return _original_error_handler(error)
+
     try:
         handler.start()
     except Exception as exc:  # noqa: BLE001
