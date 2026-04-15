@@ -57,6 +57,9 @@ AUTHORIZED_USER_IDS: frozenset[str] = frozenset({
     "U04UTG30V9A",  # Nadeem Khan
     "U03GPJ43TJT",  # Pratik Parmar
     "U020L115A2X",  # Shivnarayan Shishodia
+    "U093GFRUUUT",  # Somasekhar Avula
+    "U07T3P36R2M",  # Sunny Kumar
+    "U07TQLSPSQ2",  # Omveer Panwar
 })
 
 
