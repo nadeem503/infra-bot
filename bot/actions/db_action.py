@@ -46,7 +46,10 @@ class DBAction(BaseAction):
                 "DBAction only allows queries beginning with SELECT."
             )
 
-        query = re.sub(r'lambda_lmds\.\w+', 'lambda_lmds.device_host', query, flags=re.IGNORECASE)
+        # Strip schema prefix (pymysql connects directly to the DB, schema-qualified names fail)
+        # Also normalise any wrong table variant (devices, device, etc.) → device_host
+        query = re.sub(r'lambda_lmds\.\w+', 'device_host', query, flags=re.IGNORECASE)
+        query = re.sub(r'\bdevices\b', 'device_host', query, flags=re.IGNORECASE)
 
         if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD]):
             return {
