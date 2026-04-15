@@ -14,7 +14,7 @@ dublin:
   name: "EU-West-1 DC (eu-dc)"
   ip_prefix: "10.100"
   region_code: "eu-west-1"
-  team: "DC-EU"
+  team: "EU-DC"
   slack_ids:
     - "U08QCD0TG1F"
     - "U08QCCZADR7"
@@ -23,20 +23,13 @@ us:
   name: "US-West-1 DC"
   ip_prefix: "10.146"
   region_code: "us-west-1"
-  team: "DC-US"
+  team: "US-DC"
   slack_ids:
     - "U0AFNHU0PJ5"  # Jesse Hernandez
     - "C06TFLLMR5G"  # #lw-expansion channel
     - "U093GFRUUUT"
     - "U071R20NEGY"  # Keiwai Poon
     - "U092U6D4EH1"
-
-india:
-  name: "India DC Team"
-  ip_prefix: ""
-  region_code: "in-south"
-  team: "DC-India"
-  slack_ids: []  # TODO: add real Slack user IDs
 
 default:
   name: "Platform Engineering"
