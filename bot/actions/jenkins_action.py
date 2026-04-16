@@ -14,6 +14,29 @@ from .base_action import BaseAction
 logger = get_logger(__name__)
 
 
+def _get_build_number(queue_url: str, auth: tuple) -> tuple[int | None, str]:
+    """Poll Jenkins queue item until build starts, return (build_number, build_url).
+
+    Jenkins assigns a build number once an executor picks up the queue item.
+    Polls up to 16s with 2s intervals.
+    """
+    if not queue_url:
+        return None, ""
+    import time  # noqa: PLC0415
+    queue_api = queue_url.rstrip("/") + "/api/json"
+    for _ in range(8):
+        try:
+            r = requests.get(queue_api, auth=auth, timeout=5)
+            if r.status_code == 200:
+                executable = r.json().get("executable")
+                if executable:
+                    return executable.get("number"), executable.get("url", "")
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(2)
+    return None, ""
+
+
 def _map_params_with_ai(jenkins_param_defs: list[dict], user_params: dict) -> dict:
     """Map user-provided values to exact Jenkins parameter names using Claude CLI (Gemini fallback).
 
@@ -141,14 +164,35 @@ class JenkinsAction(BaseAction):
                 timeout=30,
             )
             success = response.status_code in (200, 201)
+            if not success:
+                return {
+                    "success": False,
+                    "message": f":x: Jenkins job `{job_name}` failed: HTTP {response.status_code}",
+                    "details": {"job_name": job_name, "status_code": response.status_code},
+                }
+
+            # Poll queue item to get the actual build number + URL
+            build_num, build_url = _get_build_number(
+                queue_url=response.headers.get("Location", ""),
+                auth=(settings.JENKINS_USER, settings.JENKINS_API_TOKEN),
+            )
+
+            if build_num:
+                msg = (
+                    f":white_check_mark: Jenkins job `{job_name}` triggered\n"
+                    f":jenkins: Build *<{build_url}|#{build_num}>*"
+                )
+            else:
+                job_url = f"{settings.JENKINS_URL.rstrip('/')}/job/{job_name}/"
+                msg = (
+                    f":white_check_mark: Jenkins job `{job_name}` triggered successfully\n"
+                    f":link: <{job_url}|View job>"
+                )
+
             return {
-                "success": success,
-                "message": (
-                    f":white_check_mark: Jenkins job `{job_name}` triggered successfully"
-                    if success else
-                    f":x: Jenkins job `{job_name}` failed: HTTP {response.status_code}"
-                ),
-                "details": {"job_name": job_name, "status_code": response.status_code},
+                "success": True,
+                "message": msg,
+                "details": {"job_name": job_name, "build_number": build_num, "build_url": build_url},
             }
         except requests.RequestException as exc:
             return {
