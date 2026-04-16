@@ -428,35 +428,6 @@ _ATLASSIAN_MCP_TOOLS = [
     "mcp__atlassian__searchJiraIssuesUsingJql",
 ]
 
-# Slack MCP tools (installed via claude_config/installer.py on bot host)
-_SLACK_MCP_TOOLS = [
-    "mcp__slack__conversations_add_message",
-    "mcp__slack__conversations_history",
-    "mcp__slack__conversations_replies",
-    "mcp__slack__conversations_search_messages",
-    "mcp__slack__users_search",
-    "mcp__slack__channels_list",
-]
-
-# GitHub MCP tools (installed via claude_config/installer.py on bot host)
-_GITHUB_MCP_TOOLS = [
-    "mcp__github__get_file_contents",
-    "mcp__github__search_code",
-    "mcp__github__list_issues",
-    "mcp__github__get_issue",
-    "mcp__github__create_issue",
-    "mcp__github__get_pull_request",
-    "mcp__github__list_pull_requests",
-    "mcp__github__create_pull_request",
-    "mcp__github__get_pull_request_files",
-    "mcp__github__push_files",
-    "mcp__github__create_or_update_file",
-    "mcp__github__search_repositories",
-]
-
-# All available MCP tools — used for device workflow calls that need Slack + GitHub
-_ALL_MCP_TOOLS = _ATLASSIAN_MCP_TOOLS + _SLACK_MCP_TOOLS + _GITHUB_MCP_TOOLS
-
 
 def _call_claude_cli(
     prompt: str,
