@@ -1,5 +1,6 @@
 slack_bolt>=1.18.0
 slack_sdk>=3.26.0
+websocket-client==1.6.4
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
 paramiko>=3.4.0
