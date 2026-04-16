@@ -239,7 +239,7 @@ Purpose: User asks to continuously watch/monitor/alert for a device.
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
 - Ubuntu hosts: Android devices in Docker (adbd_<UDID>) — services: RMDM, RDTSA, LRP, Reconciler (systemctl)
 - AP=10.151.x.x  Dublin=10.100.x.x  US=10.146.x.x
-- UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). Android serials: alphanumeric 6-20 chars.
+- UDIDs/serials: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX, Android=any alphanumeric 6-40 char token (may include non-hex letters like J,K,L,M,N,P,R,S,T). Any standalone uppercase/alphanumeric token that is NOT a common English word or IP address is a device serial.
 - Each host (PC Mini=Android, Mac Mini=iOS) manages up to 8 devices.
 
 == DEVICE STATUSES ==
@@ -297,9 +297,10 @@ All at: https://jenkins-stage.lambdatestinternal.com/job/<job-name>/
 7. MDM: confirm 4 profiles (MITM Proxy, LT LittleProxy cert, Android LT Certificate, Android Restrictions)
 
 For ACTION 1 (classify):
-{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":20,"device_name":"","pattern":"","steps":[],"fixed":false}}
+{"action":"classify","intent":"<intent>","confidence":0.0-1.0,"params":{"title":"","issue_type":"Task","assignee":"","cc":[],"ticket_key":"","issue_category":"","host":"","udid":"","hosts":[],"udids":[],"devices":[],"region":null,"host_type":null,"log_lines":20,"device_name":"","pattern":"","steps":[],"fixed":false,"query":""}}
 
 log_lines: number of log lines to tail. Default 20. Extract from message if user says "last 100 lines", "show 200 lines", "tail 30", etc.
+query: for issue_category=db_query ONLY — full SELECT SQL to run against device_host. When a device serial is present in the message, ALWAYS use WHERE udid='<serial>'. Never filter by status unless the user explicitly states a status value.
 
 IMPORTANT — all list fields must contain plain strings only, never objects/dicts.
 For device_check: set "host"="10.x.x.x", "udid"="<serial>", "devices":["10.x.x.x","<serial>"].
@@ -307,7 +308,7 @@ For multiple devices: "hosts":["10.x.x.1","10.x.x.2"], "udids":["serial1","seria
 For note_pattern: set "pattern"="one-sentence description", "steps":["step1","step2"], "fixed":true/false.
 
 Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | note_pattern | unknown
-Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch |
+Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch | db_query |
 jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down | resigner_down |
 ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down | android_container_down |
 cert_expired | host_service_status | device_dispose | device_migrate
