@@ -485,7 +485,6 @@ def _handle_infra_issue(
         "devices": ssh_devices,
         "udid": ssh_udid,
         "host": ssh_host,
-        "query": "SELECT * FROM devices WHERE status = 'offline' LIMIT 10",
         "summary": f"[Infra-Bot] {issue_category} in {region_display}",
         "description": f"Detected via Slack: {text[:500]}",
     }
