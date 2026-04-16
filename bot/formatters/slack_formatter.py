@@ -360,7 +360,10 @@ class SlackFormatter:
         return "\n".join(lines)
 
     def format_denied(self, action_type: str, denier_id: str) -> str:
-        return f":no_entry: Action `{action_type}` was denied by <@{denier_id}>"
+        return (
+            f":no_entry: Action `{action_type}` was denied by <@{denier_id}>.\n"
+            "_If the parameters were wrong, just send your request again with corrections._"
+        )
 
     def format_expired(self, action_type: str) -> str:
         return f":timer_clock: Action `{action_type}` expired (30-minute TTL exceeded)"
