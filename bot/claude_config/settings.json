@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "/Users/ltadmin/.claude/mysql-mcp.sh"
+    }
+  }
+}

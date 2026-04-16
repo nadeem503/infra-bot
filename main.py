@@ -8,6 +8,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from config import settings
+from bot.claude_config.installer import install_claude_config
 from bot.listeners.message_listener import register_message_listeners
 from bot.listeners.action_listener import register_action_listeners
 from bot.listeners.slash_listener import register_slash_listeners
@@ -67,6 +68,7 @@ if __name__ == "__main__":
     )
 
     _validate_config()
+    install_claude_config()
 
     # Kill any previously running instance before starting
     if os.path.exists(PID_FILE):
