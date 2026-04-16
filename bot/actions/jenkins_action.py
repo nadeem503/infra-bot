@@ -1,6 +1,9 @@
 """Jenkins action: resolve job name, show parameters, trigger via REST API."""
 from __future__ import annotations
 
+import json
+import re
+
 import requests
 
 from config import settings
@@ -9,6 +12,79 @@ from utils.logger import get_logger
 from .base_action import BaseAction
 
 logger = get_logger(__name__)
+
+
+def _map_params_with_ai(jenkins_param_defs: list[dict], user_params: dict) -> dict:
+    """Use Gemini to map user-provided values to exact Jenkins parameter names.
+
+    Returns a dict of {jenkins_param_name: value} for params the user specified.
+    Only returns params where the user clearly provided a value — doesn't invent values.
+    """
+    try:
+        from google import genai  # noqa: PLC0415
+        from config import settings as _s  # noqa: PLC0415
+
+        if not _s.GEMINI_API_KEY:
+            return {}
+
+        # Build a readable summary of Jenkins params
+        param_list = "\n".join(
+            f"  - {p['name']}: {p['description'] or 'no description'} (default: {p['default']!r})"
+            for p in jenkins_param_defs if p["name"]
+        )
+
+        # Build a readable summary of what the user provided
+        user_values = {k: v for k, v in user_params.items()
+                       if k not in ("job_name", "summary", "description", "devices",
+                                    "host", "udid", "hosts", "udids", "region", "host_type")
+                       and v not in (None, "", [], {})}
+        # Also include common fields explicitly
+        for field in ("host_ips", "environment", "tags", "udid", "udids"):
+            val = user_params.get(field)
+            if val:
+                user_values[field] = val
+
+        if not user_values:
+            return {}
+
+        prompt = f"""You are mapping user-provided values to Jenkins job parameters.
+
+Jenkins job parameters:
+{param_list}
+
+User provided these values:
+{json.dumps(user_values, indent=2)}
+
+Task: Map each user value to the correct Jenkins parameter name based on semantic meaning.
+Rules:
+- Only map values the user explicitly provided — do NOT invent or assume values
+- Use the EXACT Jenkins parameter name (case-sensitive, e.g. HOST_IP not host_ip)
+- For HOST_IP: use host_ips or host value (space-separated IPs as a single string)
+- For ENV/ENVIRONMENT: use environment or env value
+- For TAGS/Tags: use tags value
+- For UDIDS/UDID: use udid or udids value
+- Ignore values that don't match any Jenkins param
+
+Return ONLY a JSON object like: {{"HOST_IP": "10.x.x.x 10.x.x.y", "ENV": "prod", "TAGS": "all"}}
+No explanation, no markdown fences."""
+
+        client = genai.Client(api_key=_s.GEMINI_API_KEY)
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
+        text = resp.text.strip()
+        # Strip markdown fences if present
+        text = re.sub(r'^```[a-z]*\n?', '', text)
+        text = re.sub(r'\n?```$', '', text)
+        result = json.loads(text)
+        if isinstance(result, dict):
+            logger.info("AI param mapping: %s", result)
+            return {k: str(v) for k, v in result.items() if v not in (None, "", [])}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI param mapping failed, falling back to direct params: %s", exc)
+
+    return {}
 
 
 class JenkinsAction(BaseAction):
@@ -92,29 +168,21 @@ class JenkinsAction(BaseAction):
                 "Please provide the exact job name."
             )
 
-        # --- build params: Jenkins defaults → overridden by Claude's params ---
+        # --- build params: Jenkins defaults merged with AI-mapped user values ---
         jenkins_param_defs = get_job_params(job_name)
         # Start with Jenkins defaults
         job_params: dict = {p["name"]: p["default"] for p in jenkins_param_defs if p["name"]}
 
-        # Override with whatever Claude extracted (host_ips, ENV, tags, etc.)
-        overrides = self.params.get("job_params") or {}
-        if isinstance(overrides, dict):
-            job_params.update({k: str(v) for k, v in overrides.items() if v is not None and v != ""})
-
-        # Common field aliases: host → HOST_IP, environment → ENV, etc.
-        _aliases = {
-            "host_ips":    "HOST_IP",
-            "host":        "HOST_IP",
-            "environment": "ENV",
-            "env":         "ENV",
-            "tags":        "Tags",
-            "udid":        "UDID",
-        }
-        for src, dst in _aliases.items():
-            val = self.params.get(src)
-            if val and dst not in job_params:
-                job_params[dst] = str(val) if not isinstance(val, list) else ",".join(val)
+        if jenkins_param_defs:
+            # Let AI map the user's values to the exact Jenkins param names
+            ai_mapped = _map_params_with_ai(jenkins_param_defs, self.params)
+            # AI values override Jenkins defaults (user intent > defaults)
+            job_params.update(ai_mapped)
+        else:
+            # No param definitions from Jenkins — fall back to job_params from Claude directly
+            overrides = self.params.get("job_params") or {}
+            if isinstance(overrides, dict):
+                job_params.update({k: str(v) for k, v in overrides.items() if v is not None and v != ""})
 
         # Remove empty values
         job_params = {k: v for k, v in job_params.items() if v not in (None, "", [])}
