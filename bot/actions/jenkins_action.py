@@ -90,15 +90,21 @@ Example: {{"HOST_IP": "10.1.1.1 10.1.1.2", "ENV": "prod", "TAGS": "all"}}"""
             "USER": os.environ.get("USER", "ltadmin"),
             "LOGNAME": os.environ.get("LOGNAME", "ltadmin"),
         }
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["/opt/homebrew/bin/claude", "-p", prompt, "--model", "claude-sonnet-4-6"],
-            capture_output=True, text=True, timeout=20, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            mapped = _parse(result.stdout.strip())
+        try:
+            stdout, stderr = proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        if proc.returncode == 0 and stdout.strip():
+            mapped = _parse(stdout.strip())
             logger.info("Claude CLI param mapping: %s", mapped)
             return mapped
-        logger.warning("Claude CLI param mapping failed (rc=%d): %s", result.returncode, result.stderr[:100])
+        logger.warning("Claude CLI param mapping failed (rc=%d): %s", proc.returncode, stderr[:100])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Claude CLI param mapping error: %s — trying Gemini fallback", exc)
 

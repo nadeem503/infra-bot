@@ -432,22 +432,25 @@ def _call_claude_cli(
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
     t0 = time.time()
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=env, cwd=_INFRA_BOT_DIR,
+    )
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=timeout, env=env,
-            cwd=_INFRA_BOT_DIR,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
         duration = int((time.time() - t0) * 1000)
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
+        if proc.returncode != 0:
+            err = (stderr or stdout or "").strip()
             log_claude_call(prompt[:120], "", duration, False,
                             action=_log_action, error=err[:200])
-            raise RuntimeError(f"claude CLI exited {result.returncode}: {err[:200]}")
-        output = result.stdout.strip()
+            raise RuntimeError(f"claude CLI exited {proc.returncode}: {err[:200]}")
+        output = stdout.strip()
         log_claude_call(prompt[:120], output[:200], duration, True, action=_log_action)
         return output
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()  # drain to prevent zombie
         duration = int((time.time() - t0) * 1000)
         log_claude_call(prompt[:120], "", duration, False,
                         action=_log_action, error="timeout")
