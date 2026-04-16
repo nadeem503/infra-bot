@@ -194,13 +194,9 @@ Params:
     dedicated_org: NULL = public cloud, else org ID integer
     Default SELECT columns: udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at
     Always LIMIT 50 unless aggregate (COUNT/GROUP BY). NEVER INSERT/UPDATE/DELETE/DROP.
-    CRITICAL — filter priority:
-      1. If message contains a UDID → always use WHERE udid = '<udid>'  (NEVER ignore a UDID in the message)
-      2. If message contains a host IP → WHERE host_ip = '<ip>'
-      3. "check status" / "device status" WITH a UDID present → SELECT udid, host_ip, status, remark FROM device_host WHERE udid = '<udid>'
-         Do NOT add any extra WHERE status = '...' clause — the user wants to SEE the status, not filter by it
-      4. Valid status values ONLY: active, busy, cleanup, faulty, maintenance, inactive, disposed
-         NEVER use 'offline', 'online', or any unlisted value as a filter
+    CRITICAL — always use WHERE udid = '<udid>' when a device serial is present in the message.
+      Device serial = any alphanumeric token (6-40 chars, may contain non-hex letters like J,K,L,M,N) that is NOT a common English word or IP address. Examples: 09191FDD4000FJ, R58M31YBKAE.
+      NEVER add WHERE status = '...' when user says "check status" — they want to READ the status, not filter by it.
   If no clear filter (UDID/IP/org/status) → action=direct, ask what to look up.
 
 -- DEVICE DISPOSE (intent=infra_issue, issue_category=device_dispose) --
@@ -365,7 +361,7 @@ Return ONLY JSON:
 "hosts":[],"udids":[],"log_lines":20}}
 
 Rules:
-- UDIDs: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX (8hex-dash-16hex). IPs: 10.151→ap, 10.100→dublin, 10.146→us
+- UDIDs/serials: iOS old=40 hex chars, iOS new=XXXXXXXX-XXXXXXXXXXXXXXXX, Android=alphanumeric 6-20 chars (may include non-hex letters like J,K,L,M,N etc). ANY standalone uppercase/alphanumeric token that is not a common English word or IP is a device serial. IPs: 10.151→ap, 10.100→dublin, 10.146→us
 - MISMATCH/device not found → device_disconnected
 - Slack IDs: <@U...> format, 11 chars starting with U
 - Use thread context for follow-up messages missing device info
