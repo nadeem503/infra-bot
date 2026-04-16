@@ -98,6 +98,51 @@ def search_job(query: str) -> Optional[str]:
     return None
 
 
+def search_jobs(query: str, max_results: int = 5) -> list[str]:
+    """Return multiple Jenkins jobs matching a free-text query, sorted by relevance.
+
+    Unlike search_job() which returns only the single best match, this returns
+    up to max_results candidates for passive browsing (no trigger intent).
+    """
+    jobs = list_jobs()
+    if not jobs:
+        return []
+
+    query_lower = query.lower().replace("-", " ").replace("_", " ")
+    query_words = [w for w in query_lower.split() if len(w) > 1]
+    results: list[str] = []
+
+    # 1. All query words present in job name
+    for j in jobs:
+        norm = j.lower().replace("-", " ").replace("_", " ")
+        if all(w in norm for w in query_words):
+            results.append(j)
+
+    # 2. Partial word match — at least (N-1) words present
+    if len(results) < max_results:
+        threshold = max(1, len(query_words) - 1)
+        normalised = {j: j.lower().replace("-", " ").replace("_", " ") for j in jobs}
+        for job, norm in normalised.items():
+            if job not in results:
+                score = sum(1 for w in query_words if w in norm)
+                if score >= threshold:
+                    results.append(job)
+
+    # 3. difflib fuzzy for remaining slots
+    if len(results) < max_results:
+        normalised = {j: j.lower().replace("-", " ").replace("_", " ") for j in jobs}
+        fuzzy = difflib.get_close_matches(
+            query_lower, normalised.values(),
+            n=max_results - len(results), cutoff=0.35,
+        )
+        for match in fuzzy:
+            for job, norm in normalised.items():
+                if norm == match and job not in results:
+                    results.append(job)
+
+    return results[:max_results]
+
+
 def get_job_params(job_name: str) -> list[dict]:
     """Fetch parameter definitions for a Jenkins job.
 

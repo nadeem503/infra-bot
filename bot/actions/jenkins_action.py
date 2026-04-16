@@ -182,14 +182,29 @@ class JenkinsAction(BaseAction):
                 queue_url=response.headers.get("Location", ""),
                 auth=(settings.JENKINS_USER, settings.JENKINS_API_TOKEN),
             )
+            # Sanitise URL — strip trailing slash/comma so the Slack link renders cleanly
+            build_url = (build_url or "").rstrip("/, ")
 
             if build_num:
                 msg = (
                     f":white_check_mark: Jenkins job `{job_name}` triggered\n"
                     f":jenkins: Build *<{build_url}|#{build_num}>*"
                 )
+                # Register build for background status polling (5-min cron)
+                try:
+                    from utils.jenkins_monitor import store_build  # noqa: PLC0415
+                    store_build(
+                        job_name=job_name,
+                        build_num=build_num,
+                        build_url=build_url,
+                        channel=self.channel or "",
+                        thread_ts=self.params.get("thread_ts", "") or "",
+                        triggered_by=self.triggered_by or "",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             else:
-                job_url = f"{settings.JENKINS_URL.rstrip('/')}/job/{job_name}/"
+                job_url = f"{settings.JENKINS_URL.rstrip('/')}/job/{job_name}"
                 msg = (
                     f":white_check_mark: Jenkins job `{job_name}` triggered successfully\n"
                     f":link: <{job_url}|View job>"

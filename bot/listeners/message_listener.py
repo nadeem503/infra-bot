@@ -245,6 +245,9 @@ ISSUE_TO_ACTION: dict[str, str] = {
     "db_query":                 "db_query",
     "jenkins_failure":          "jenkins_trigger",
     "jenkins_trigger":          "jenkins_trigger",
+    "jenkins_search":           "jenkins_search",
+    "jenkins_params":           "jenkins_search",
+    "jenkins_status":           "jenkins_search",
     "app_crash":                "adb_logcat",
     "storage_issue":            "adb_clear_storage",
     "device_disconnected":      "device_disconnected",
@@ -446,6 +449,121 @@ def _handle_multi_action(
     return f"[Multi-action] {len(actions)} steps completed"
 
 
+def _handle_jenkins_search(params: dict, thread_ts: str, say) -> str:  # noqa: ANN001
+    """List Jenkins jobs matching the user's description — no trigger."""
+    from utils.jenkins_client import search_jobs, get_job_params, list_jobs  # noqa: PLC0415
+    query = (params.get("job_query") or params.get("job_name") or "").strip()
+    if not query:
+        # No query — list all jobs
+        jobs = list_jobs()
+        if not jobs:
+            say(text=":jenkins: No Jenkins jobs found (check JENKINS_URL config)", thread_ts=thread_ts)
+            return "jenkins_search: no jobs"
+        preview = "\n".join(f"  • `{j}`" for j in jobs[:20])
+        suffix = f"\n_…and {len(jobs) - 20} more_" if len(jobs) > 20 else ""
+        say(text=f":jenkins: *All Jenkins jobs ({len(jobs)} total):*\n{preview}{suffix}", thread_ts=thread_ts)
+        return f"jenkins_search: listed {len(jobs)} jobs"
+
+    matches = search_jobs(query)
+    if not matches:
+        say(text=f":jenkins: No Jenkins jobs found matching `{query}`", thread_ts=thread_ts)
+        return "jenkins_search: no matches"
+
+    lines = [f":jenkins: *Found {len(matches)} job(s) matching `{query}`:*"]
+    for j in matches:
+        lines.append(f"  • `{j}`")
+    lines.append("_Reply with a job name + params to trigger one._")
+    say(text="\n".join(lines), thread_ts=thread_ts)
+    return f"jenkins_search: {len(matches)} matches for '{query}'"
+
+
+def _handle_jenkins_params(params: dict, thread_ts: str, say) -> str:  # noqa: ANN001
+    """Show parameters for a Jenkins job — no trigger."""
+    from utils.jenkins_client import search_job, get_job_params  # noqa: PLC0415
+    raw_name = (params.get("job_name") or params.get("job_query") or "").strip()
+    if not raw_name:
+        say(text=":warning: Please specify a job name, e.g. `show params for ubuntu host setup`", thread_ts=thread_ts)
+        return "jenkins_params: no job name"
+
+    job_name = search_job(raw_name)
+    if not job_name:
+        say(text=f":jenkins: No job found matching `{raw_name}`", thread_ts=thread_ts)
+        return "jenkins_params: no match"
+
+    param_defs = get_job_params(job_name)
+    if not param_defs:
+        say(text=f":jenkins: Job `{job_name}` has no defined parameters (or params unavailable)", thread_ts=thread_ts)
+        return f"jenkins_params: {job_name} no params"
+
+    lines = [f":jenkins: *Parameters for `{job_name}`:*"]
+    for p in param_defs:
+        desc = f" — _{p['description']}_" if p.get("description") else ""
+        default = f" (default: `{p['default']}`)" if p.get("default") not in (None, "") else ""
+        lines.append(f"  • `{p['name']}`{default}{desc}")
+    say(text="\n".join(lines), thread_ts=thread_ts)
+    return f"jenkins_params: listed params for {job_name}"
+
+
+def _handle_jenkins_status(params: dict, channel: str, thread_ts: str, say) -> str:  # noqa: ANN001
+    """Check the status of a recent Jenkins build — polls Jenkins API."""
+    from utils.jenkins_monitor import (  # noqa: PLC0415
+        get_recent_build_for_thread, get_build_status, get_pending_builds,
+    )
+    from utils.jenkins_client import search_job  # noqa: PLC0415
+
+    # Try to find the build from params first, then fall back to thread context
+    job_name  = (params.get("job_name") or "").strip()
+    build_num = int(params.get("build_num") or 0)
+
+    build_meta = None
+
+    if job_name and build_num:
+        # User specified exact job + build number
+        resolved = search_job(job_name) if job_name else job_name
+        if resolved:
+            build_meta = {"job_name": resolved, "build_num": build_num,
+                          "build_url": "", "triggered_by": ""}
+
+    if not build_meta:
+        # Look up most recent build triggered in this thread
+        build_meta = get_recent_build_for_thread(channel, thread_ts)
+
+    if not build_meta:
+        # Last resort: most recent pending build overall
+        pending = get_pending_builds()
+        if pending:
+            build_meta = max(pending, key=lambda b: b.get("triggered_at", 0))
+
+    if not build_meta:
+        say(text=":jenkins: No recent build found. Trigger a job first, or specify `job name + build number`.", thread_ts=thread_ts)
+        return "jenkins_status: no build found"
+
+    jname = build_meta["job_name"]
+    bnum  = build_meta["build_num"]
+    burl  = build_meta.get("build_url", "")
+
+    status = get_build_status(jname, bnum)
+    if status is None:
+        say(text=f":warning: Could not reach Jenkins to check `{jname}` #{bnum}. Try opening the build link directly.", thread_ts=thread_ts)
+        return "jenkins_status: unreachable"
+
+    if status.get("building"):
+        say(text=f":hourglass_flowing_sand: `{jname}` #{bnum} is *still running*…\n:link: <{burl}|View build>", thread_ts=thread_ts)
+        return f"jenkins_status: {jname}#{bnum} building"
+
+    result = status.get("result", "UNKNOWN")
+    icons  = {"SUCCESS": ":white_check_mark:", "FAILURE": ":x:", "ABORTED": ":no_entry:", "UNSTABLE": ":warning:"}
+    icon   = icons.get(result, ":grey_question:")
+    dur    = status.get("duration_s", 0)
+    dur_str = f"{dur // 60}m {dur % 60}s" if dur >= 60 else f"{dur}s"
+    link   = f"<{burl}|#{bnum}>" if burl else f"#{bnum}"
+    say(
+        text=f"{icon} `{jname}` {link} — *{result}* ({dur_str})",
+        thread_ts=thread_ts,
+    )
+    return f"jenkins_status: {jname}#{bnum} → {result}"
+
+
 def _handle_infra_issue(
     params: dict,
     text: str,
@@ -457,6 +575,14 @@ def _handle_infra_issue(
     trace_id: str = "",
 ) -> str:
     issue_category = params.get("issue_category", "device_down")
+
+    # --- Informational Jenkins queries — no approval flow needed ---
+    if issue_category == "jenkins_search":
+        return _handle_jenkins_search(params, thread_ts, say)
+    if issue_category == "jenkins_params":
+        return _handle_jenkins_params(params, thread_ts, say)
+    if issue_category == "jenkins_status":
+        return _handle_jenkins_status(params, channel, thread_ts, say)
     devices: list[str] = params.get("devices") or []
     region_slug: str = params.get("region") or "unknown"
 
@@ -485,6 +611,7 @@ def _handle_infra_issue(
         "devices": ssh_devices,
         "udid": ssh_udid,
         "host": ssh_host,
+        "thread_ts": thread_ts,
         "summary": f"[Infra-Bot] {issue_category} in {region_display}",
         "description": f"Detected via Slack: {text[:500]}",
     }

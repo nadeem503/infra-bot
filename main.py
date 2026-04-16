@@ -91,6 +91,12 @@ if __name__ == "__main__":
     app = create_app()
     handler = SocketModeHandler(app, settings.SLACK_APP_TOKEN)
 
+    # Start Jenkins build status poller (checks every 5 min, posts to thread when done)
+    from bot.workers.jenkins_poller import start_poller  # noqa: PLC0415
+    from slack_sdk import WebClient  # noqa: PLC0415
+    _slack_client = WebClient(token=settings.SLACK_BOT_TOKEN)
+    start_poller(_slack_client)
+
     logger.info("Infra-Bot is running in Socket Mode")
 
     # BrokenPipeError loop detector — if >5 pipe errors in 60s, exit so watchdog restarts

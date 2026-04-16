@@ -170,13 +170,37 @@ Use the ANDROID REMARK → ISSUE CATEGORY MAPPING section to pick the right issu
 Params: host (IP), udid
 
 -- JENKINS JOB (intent=infra_issue, issue_category=jenkins_trigger) --
-Purpose: User wants to run or trigger a Jenkins job.
+Purpose: User wants to RUN or TRIGGER a Jenkins job (explicit trigger/run/execute intent).
+Use this ONLY when the user clearly wants to execute a job. If unsure whether they want to
+trigger or just browse, default to jenkins_search and ask.
 Params:
   job_name: the user's description of the job (e.g. "ubuntu host setup", "device reboot", "sanity check").
             Do NOT try to match to a fixed list — pass the user's words exactly. The bot will search Jenkins.
   host_ips: space-separated IPs from message/thread
   environment: "stage" | "prod" (default "stage"; infer from context)
   job_params: JSON object with any extra params mentioned (HOST_IP, ENV, Tags, UDID, etc.)
+
+-- JENKINS JOB SEARCH (intent=infra_issue, issue_category=jenkins_search) --
+Purpose: User wants to LIST or FIND Jenkins jobs matching a description WITHOUT triggering.
+Use when: "is there a job for X", "list jobs for X", "show jenkins jobs", "what jobs exist",
+          "check if X job exists", "find jenkins job", "search for X job"
+Params:
+  job_query: the user's search description (e.g. "ios host setup", "ubuntu setup")
+
+-- JENKINS JOB PARAMETERS (intent=infra_issue, issue_category=jenkins_params) --
+Purpose: User wants to SEE the parameters of a specific Jenkins job (not trigger it).
+Use when: "what parameters does job X have", "show params for X", "share the parameters for X job",
+          "what are the fields for X job", "show me job parameters"
+Params:
+  job_name: the user's job name/description
+
+-- JENKINS BUILD STATUS (intent=infra_issue, issue_category=jenkins_status) --
+Purpose: User wants to CHECK the status of a running or recent Jenkins build.
+Use when: "check build status", "is the build done", "build finished?", "check jenkins build",
+          "what's the status of my build", "is job X done"
+Params:
+  job_name: job name if mentioned (optional, leave "" if not specified)
+  build_num: build number as integer if mentioned (optional, 0 if not specified)
 
 -- DATABASE QUERY (intent=infra_issue, issue_category=db_query) --
 Purpose: User wants to look up device data from the database.
