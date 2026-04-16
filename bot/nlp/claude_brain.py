@@ -172,14 +172,11 @@ Params: host (IP), udid
 -- JENKINS JOB (intent=infra_issue, issue_category=jenkins_trigger) --
 Purpose: User wants to run or trigger a Jenkins job.
 Params:
-  job_name: match to the known jobs list below. If ambiguous or unknown → action=direct, ask which job.
-    Known jobs: realdevice-run-devops-sanity | realdevice-device-check | realdevice-restart-android-container
-                realdevice-device-reboot | realdevice-reset-proxy | realdevice-ubuntu-gnirehtet-apk-install-prod
-                realdevice-ubuntu-install-ucturbo | realdevice-takescreen-android-devices
-                realdevice-takescreen-ios-devices | realdevice-android-uptime
+  job_name: the user's description of the job (e.g. "ubuntu host setup", "device reboot", "sanity check").
+            Do NOT try to match to a fixed list — pass the user's words exactly. The bot will search Jenkins.
   host_ips: space-separated IPs from message/thread
   environment: "stage" | "prod" (default "stage"; infer from context)
-  job_params: JSON object with HOST_IP, ENV, and any other params mentioned
+  job_params: JSON object with any extra params mentioned (HOST_IP, ENV, Tags, UDID, etc.)
 
 -- DATABASE QUERY (intent=infra_issue, issue_category=db_query) --
 Purpose: User wants to look up device data from the database.
@@ -283,12 +280,8 @@ Check connectivity: run Jenkins job `realdevice-device-check` with `host_ip,UDID
 Sanity check: Jenkins job `realdevice-run-devops-sanity` with `host_ip,udid`
 Restart container: Jenkins job `realdevice-restart-android-container`
 
-== IMPORTANT JENKINS JOBS ==
-realdevice-run-devops-sanity | realdevice-device-check | realdevice-restart-android-container
-realdevice-device-reboot | realdevice-update-device-status | realdevice-reset-proxy
-realdevice-ubuntu-gnirehtet-apk-install-prod | realdevice-ubuntu-install-ucturbo
-realdevice-takescreen-android-devices | realdevice-takescreen-ios-devices | realdevice-android-uptime
-All at: https://jenkins-stage.lambdatestinternal.com/job/<job-name>/
+== JENKINS JOBS ==
+Do NOT hardcode job names. Pass the user's description as job_name — the bot searches Jenkins automatically.
 
 == DEVICE SETUP CHECKLIST (for direct replies about faulty device) ==
 1. Wi-Fi MAC → Phone MAC (not random)  2. USB mode = File Transfer  3. Enable: Stay Awake, USB Debugging, Wireless Debugging
