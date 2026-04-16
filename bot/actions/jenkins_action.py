@@ -15,74 +15,83 @@ logger = get_logger(__name__)
 
 
 def _map_params_with_ai(jenkins_param_defs: list[dict], user_params: dict) -> dict:
-    """Use Gemini to map user-provided values to exact Jenkins parameter names.
+    """Map user-provided values to exact Jenkins parameter names using Claude CLI (Gemini fallback).
 
-    Returns a dict of {jenkins_param_name: value} for params the user specified.
-    Only returns params where the user clearly provided a value — doesn't invent values.
+    Claude reads the Jenkins param names + descriptions and figures out the mapping itself.
+    No hardcoded field hints — works for any job with any param naming convention.
     """
+    # Build Jenkins param summary
+    param_list = "\n".join(
+        f"  - {p['name']}: {p['description'] or 'no description'} (default: {p['default']!r})"
+        for p in jenkins_param_defs if p["name"]
+    )
+
+    # Pass ALL user params as-is — let the AI figure out what maps where
+    user_values = {k: v for k, v in user_params.items()
+                   if v not in (None, "", [], {}) and k not in ("summary", "description")}
+
+    if not user_values:
+        return {}
+
+    prompt = f"""You are mapping user-provided values to Jenkins job parameters.
+
+Jenkins job parameters (name: description, default):
+{param_list}
+
+User provided these values (in any format):
+{json.dumps(user_values, indent=2)}
+
+Task: Use semantic understanding to map the user's values to the correct Jenkins parameter names.
+- Only map values the user explicitly provided — do NOT invent or assume values
+- Use the EXACT Jenkins parameter name as defined above (case-sensitive)
+- If a user value could match multiple params, pick the most semantically correct one
+- Ignore user values that clearly don't correspond to any Jenkins param
+
+Return ONLY a valid JSON object. No explanation, no markdown fences.
+Example: {{"HOST_IP": "10.1.1.1 10.1.1.2", "ENV": "prod", "TAGS": "all"}}"""
+
+    def _parse(text: str) -> dict:
+        text = re.sub(r'^```[a-z]*\n?', '', text.strip())
+        text = re.sub(r'\n?```$', '', text.strip())
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return {k: str(v) for k, v in result.items() if v not in (None, "", [])}
+        return {}
+
+    # --- Primary: Claude CLI ---
+    try:
+        import os, subprocess  # noqa: E401, PLC0415
+        env = {
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            "HOME": os.environ.get("HOME", "/Users/ltadmin"),
+            "USER": os.environ.get("USER", "ltadmin"),
+            "LOGNAME": os.environ.get("LOGNAME", "ltadmin"),
+        }
+        result = subprocess.run(
+            ["/opt/homebrew/bin/claude", "-p", prompt, "--model", "claude-sonnet-4-6"],
+            capture_output=True, text=True, timeout=20, env=env,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            mapped = _parse(result.stdout.strip())
+            logger.info("Claude CLI param mapping: %s", mapped)
+            return mapped
+        logger.warning("Claude CLI param mapping failed (rc=%d): %s", result.returncode, result.stderr[:100])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Claude CLI param mapping error: %s — trying Gemini fallback", exc)
+
+    # --- Fallback: Gemini ---
     try:
         from google import genai  # noqa: PLC0415
         from config import settings as _s  # noqa: PLC0415
-
         if not _s.GEMINI_API_KEY:
             return {}
-
-        # Build a readable summary of Jenkins params
-        param_list = "\n".join(
-            f"  - {p['name']}: {p['description'] or 'no description'} (default: {p['default']!r})"
-            for p in jenkins_param_defs if p["name"]
-        )
-
-        # Build a readable summary of what the user provided
-        user_values = {k: v for k, v in user_params.items()
-                       if k not in ("job_name", "summary", "description", "devices",
-                                    "host", "udid", "hosts", "udids", "region", "host_type")
-                       and v not in (None, "", [], {})}
-        # Also include common fields explicitly
-        for field in ("host_ips", "environment", "tags", "udid", "udids"):
-            val = user_params.get(field)
-            if val:
-                user_values[field] = val
-
-        if not user_values:
-            return {}
-
-        prompt = f"""You are mapping user-provided values to Jenkins job parameters.
-
-Jenkins job parameters:
-{param_list}
-
-User provided these values:
-{json.dumps(user_values, indent=2)}
-
-Task: Map each user value to the correct Jenkins parameter name based on semantic meaning.
-Rules:
-- Only map values the user explicitly provided — do NOT invent or assume values
-- Use the EXACT Jenkins parameter name (case-sensitive, e.g. HOST_IP not host_ip)
-- For HOST_IP: use host_ips or host value (space-separated IPs as a single string)
-- For ENV/ENVIRONMENT: use environment or env value
-- For TAGS/Tags: use tags value
-- For UDIDS/UDID: use udid or udids value
-- Ignore values that don't match any Jenkins param
-
-Return ONLY a JSON object like: {{"HOST_IP": "10.x.x.x 10.x.x.y", "ENV": "prod", "TAGS": "all"}}
-No explanation, no markdown fences."""
-
         client = genai.Client(api_key=_s.GEMINI_API_KEY)
-        resp = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-        )
-        text = resp.text.strip()
-        # Strip markdown fences if present
-        text = re.sub(r'^```[a-z]*\n?', '', text)
-        text = re.sub(r'\n?```$', '', text)
-        result = json.loads(text)
-        if isinstance(result, dict):
-            logger.info("AI param mapping: %s", result)
-            return {k: str(v) for k, v in result.items() if v not in (None, "", [])}
+        resp = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        mapped = _parse(resp.text)
+        logger.info("Gemini param mapping fallback: %s", mapped)
+        return mapped
     except Exception as exc:  # noqa: BLE001
-        logger.warning("AI param mapping failed, falling back to direct params: %s", exc)
+        logger.warning("Gemini param mapping also failed: %s", exc)
 
     return {}
 
