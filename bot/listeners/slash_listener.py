@@ -37,8 +37,8 @@ LOGS_PATH = Path("logs/actions.jsonl")
 REPLAY_TTL = 3600   # 1 hour
 
 FAULTY_QUERY = (
-    "SELECT COUNT(*) AS faulty_count FROM devices "
-    "WHERE status IN ('offline', 'faulty', 'error', 'down')"
+    "SELECT COUNT(*) AS faulty_count FROM device_host "
+    "WHERE status IN ('faulty')"
 )
 
 
