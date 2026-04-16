@@ -36,10 +36,11 @@ _formatter = SlackFormatter()
 LOGS_PATH = Path("logs/actions.jsonl")
 REPLAY_TTL = 3600   # 1 hour
 
-FAULTY_QUERY = (
-    "SELECT COUNT(*) AS faulty_count FROM device_host "
-    "WHERE status IN ('faulty')"
-)
+def _build_faulty_query(os_filter: str | None = None) -> str:
+    base = "SELECT COUNT(*) AS faulty_count FROM device_host WHERE status IN ('faulty')"
+    if os_filter:
+        base += f" AND os = '{os_filter}'"
+    return base
 
 
 def _parse(text: str) -> tuple[str, list[str]]:
@@ -161,11 +162,13 @@ def _handle_history(args: list[str], channel: str, respond) -> None:  # noqa: AN
     respond(blocks=blocks, text=f"History for {label}")
 
 
-def _handle_faulty_count(respond) -> None:  # noqa: ANN001
+def _handle_faulty_count(respond, os_filter: str | None = None) -> None:  # noqa: ANN001
     if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD, settings.DB_NAME]):
         respond(":warning: Database not configured — set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env")
         return
-    respond(":hourglass: Querying DB for faulty device count...")
+    query = _build_faulty_query(os_filter)
+    label = f"`{os_filter}`" if os_filter else "all"
+    respond(f":hourglass: Querying DB for faulty {label} device count...")
     try:
         import pymysql  # noqa: PLC0415
         conn = pymysql.connect(
@@ -174,12 +177,12 @@ def _handle_faulty_count(respond) -> None:  # noqa: ANN001
         )
         with conn:
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
-                cur.execute(FAULTY_QUERY)
+                cur.execute(query)
                 row = cur.fetchone()
         count = row.get("faulty_count", 0) if row else 0
         respond(
-            f":warning: *Faulty device count:* `{count}` device(s) currently offline / faulty / down\n"
-            f"_Query: `{FAULTY_QUERY}`_"
+            f":warning: *Faulty device count ({label}):* `{count}` device(s)\n"
+            f"_Query: `{query}`_"
         )
     except Exception as exc:  # noqa: BLE001
         respond(f":x: DB query failed: `{type(exc).__name__}: {exc}`")
@@ -310,7 +313,8 @@ def register_slash_listeners(app: App) -> None:
         elif subcommand == "history":
             _handle_history(args, channel, respond)
         elif subcommand == "faulty" and args and args[0] == "count":
-            _handle_faulty_count(respond)
+            os_filter = args[1].lower() if len(args) > 1 and args[1].lower() in ("android", "ios") else None
+            _handle_faulty_count(respond, os_filter)
         elif subcommand == "logs":
             _handle_logs(args, respond)
         else:
@@ -319,6 +323,6 @@ def register_slash_listeners(app: App) -> None:
                 "\u2022 `/infra status <ip_or_udid>` \u2014 live device health\n"
                 "\u2022 `/infra pending` \u2014 list pending approvals\n"
                 "\u2022 `/infra history device=<id> last=24h` \u2014 action history with Replay\n"
-                "\u2022 `/infra faulty count` \u2014 count offline/faulty devices from DB\n"
+                "\u2022 `/infra faulty count [android|ios]` \u2014 count faulty devices from DB (optional OS filter)\n"
                 "\u2022 `/infra logs [claude|users|sessions] [last=Nh]` \u2014 activity logs & stats"
             )
