@@ -23,6 +23,7 @@ from slack_bolt import App
 from bot.approval.approval_manager import approval_manager
 from bot.formatters.slack_formatter import SlackFormatter
 from bot.memory import dedup_store, thread_memory
+from bot.memory.active_threads import activate as activate_thread, is_active as thread_is_active
 from bot.memory.rate_limiter import check_and_increment, set_last_action, ttl_remaining
 from bot.memory.redis_client import get_redis
 from bot.analyzers.root_cause_analyzer import (
@@ -321,17 +322,53 @@ def _exec_create_jira(params: dict, slack_client=None) -> dict:
     if not title:
         return {"success": False, "error": "Could not determine ticket title"}
 
-    # Build a rich description from available params
-    description_parts = []
-    if params.get("description"):
-        description_parts.append(params["description"])
+    # Build a rich structured description from all available params
+    sections: list[str] = []
+
+    # Problem / summary section
+    problem_text = params.get("description") or title
+    sections.append(f"*Problem*\n{problem_text}")
+
+    # Affected devices section
+    device_lines: list[str] = []
     if params.get("host"):
-        description_parts.append(f"Host: {params['host']}")
+        device_lines.append(f"Host IP: {params['host']}")
+    if params.get("udid"):
+        device_lines.append(f"UDID: {params['udid']}")
     if params.get("devices"):
-        description_parts.append(f"Devices: {', '.join(params['devices'])}")
+        devs = params["devices"]
+        if isinstance(devs, list) and devs:
+            device_lines.append(f"Devices: {', '.join(str(d) for d in devs)}")
+    if params.get("host_udid_pairs"):
+        device_lines.append(f"Host/UDID pairs: {params['host_udid_pairs']}")
+    if params.get("udids"):
+        device_lines.append(f"UDIDs: {params['udids']}")
+    if params.get("host_ips"):
+        device_lines.append(f"Host IPs: {params['host_ips']}")
+    if device_lines:
+        sections.append("*Affected Devices*\n" + "\n".join(f"• {line}" for line in device_lines))
+
+    # Action / context section
+    context_lines: list[str] = []
+    if params.get("environment"):
+        context_lines.append(f"Environment: {params['environment']}")
+    if params.get("remark"):
+        context_lines.append(f"Remark: {params['remark']}")
+    if params.get("status"):
+        context_lines.append(f"Status change: → {params['status']}")
+    if params.get("dedicated_org"):
+        context_lines.append(f"Org: {params['dedicated_org']}")
+    if context_lines:
+        sections.append("*Details*\n" + "\n".join(f"• {line}" for line in context_lines))
+
+    # Reference section
+    ref_lines: list[str] = []
+    ref_lines.append("Raised via Infra-Bot (Slack)")
     if params.get("slack_thread_url"):
-        description_parts.append(f"Slack thread: {params['slack_thread_url']}")
-    description = "\n".join(description_parts) if description_parts else title
+        ref_lines.append(f"Slack thread: {params['slack_thread_url']}")
+    sections.append("*Reference*\n" + "\n".join(f"• {line}" for line in ref_lines))
+
+    description = "\n\n".join(sections)
 
     # Resolve Slack user ID → JIRA accountId if provided
     assignee_jira_id: str | None = None
@@ -685,16 +722,24 @@ def _handle_infra_issue(
             else:
                 result_text = _formatter.format_error(result.get("message", f"`{action_type}` failed"))
 
-            # Notify mobile-infra team so they can track the GH Actions run
-            notify_id = settings.MOBILE_INFRA_SLACK_ID
-            if notify_id and result.get("success"):
-                if notify_id.startswith("S"):          # Slack user-group: <!subteam^S...>
-                    notify_mention = f"<!subteam^{notify_id}>"
-                elif notify_id.startswith("C"):        # channel: <#C...>
-                    notify_mention = f"<#{notify_id}>"
-                else:                                  # user ID: <@U...>
-                    notify_mention = f"<@{notify_id}>"
-                result_text += f"\n\n{notify_mention} please review and approve the workflow run above."
+            # Tag platform-dc team for GH Actions workflow approval
+            if result.get("success"):
+                def _slack_mention(slack_id: str) -> str:
+                    if slack_id.startswith("S"):
+                        return f"<!subteam^{slack_id}>"
+                    elif slack_id.startswith("C"):
+                        return f"<#{slack_id}>"
+                    return f"<@{slack_id}>"
+
+                approval_parts: list[str] = []
+                if settings.PLATFORM_DC_SLACK_ID:
+                    approval_parts.append(_slack_mention(settings.PLATFORM_DC_SLACK_ID))
+                if settings.MOBILE_INFRA_SLACK_ID:
+                    approval_parts.append(_slack_mention(settings.MOBILE_INFRA_SLACK_ID))
+
+                if approval_parts:
+                    mentions = " ".join(approval_parts)
+                    result_text += f"\n\n{mentions} please review and approve the workflow run above."
 
             say(text=result_text, thread_ts=thread_ts)
             logger.info("Auto-executed %s for %s region=%s", action_type, issue_category, region_slug)
@@ -943,6 +988,9 @@ def register_message_listeners(app: App) -> None:
             say(text=greeting, thread_ts=thread_ts)
             logger.warning("[%s] Unauthorized attempt by %s: %.100s", trace_id, user_id, text)
             return
+
+        # Mark thread as active so follow-up messages (without @mention) are also processed
+        activate_thread(channel, thread_ts, activated_by=user_id)
 
         thread_history = thread_memory.format_for_claude(channel, thread_ts)
         thread_memory.add_message(channel, thread_ts, "user", text)
@@ -1218,6 +1266,96 @@ def register_message_listeners(app: App) -> None:
             )
 
     @app.event("message")
-    def handle_message_events(body, logger) -> None:  # noqa: ANN001
-        """No-op handler to silence Slack Bolt 404 warnings for message events."""
-        pass
+    def handle_message_events(event: dict, say, client, body) -> None:  # noqa: ANN001
+        """Handle follow-up messages in threads where the bot was previously @mentioned.
+
+        If the bot has been tagged in a thread, subsequent messages from authorized
+        users in that same thread are processed even without an @mention.
+        """
+        # Ignore bot messages (including infra-bot itself)
+        if event.get("bot_id") or event.get("subtype"):
+            return
+
+        channel = event.get("channel", "")
+        thread_ts = event.get("thread_ts", "")
+        user_id = event.get("user", "")
+        text = event.get("text", "").strip()
+        ts = event.get("ts", "")
+
+        # Only process thread replies (not top-level channel messages)
+        if not thread_ts or thread_ts == ts:
+            return
+
+        # Only process if bot was previously @mentioned in this thread
+        if not thread_is_active(channel, thread_ts):
+            return
+
+        # Skip empty messages
+        if not text:
+            return
+
+        # Authorization check
+        if user_id not in AUTHORIZED_USER_IDS:
+            return
+
+        trace_id = uuid.uuid4().hex[:8]
+        logger.info("[%s] thread follow-up from %s in %s (no @mention): %.80s",
+                    trace_id, user_id, channel, text)
+
+        # Route through the same pipeline as a normal @mention
+        # Re-activate to refresh TTL with every message
+        activate_thread(channel, thread_ts, activated_by=user_id)
+
+        thread_history = thread_memory.format_for_claude(channel, thread_ts)
+        thread_memory.add_message(channel, thread_ts, "user", text)
+
+        try:
+            prefetched_thread: list[dict] | None = None
+            try:
+                _r = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
+                prefetched_thread = _r.get("messages", [])
+            except Exception:  # noqa: BLE001
+                prefetched_thread = []
+
+            live_history = _build_live_thread_history(
+                client, channel, thread_ts, ts, limit=10,
+                prefetched=prefetched_thread,
+            )
+            if live_history:
+                thread_history = live_history
+
+            thread_ctx = _build_thread_context(
+                client, channel, thread_ts, ts,
+                prefetched=prefetched_thread,
+            )
+
+            result = brain.classify(text, thread_history)
+            intent = result.get("intent", "unknown")
+            params = result.get("params", {})
+
+            logger.info("[%s] follow-up intent=%s confidence=%.2f",
+                        trace_id, intent, result.get("confidence", 0))
+
+            if intent == "_direct_reply":
+                reply = params.get("reply", "")
+                if reply:
+                    say(text=reply, thread_ts=thread_ts)
+                    thread_memory.add_message(channel, thread_ts, "assistant", reply)
+                return
+
+            if intent in ("create_jira",):
+                res = _exec_create_jira(params, slack_client=client)
+                say(text=_jira_created_reply(res), thread_ts=thread_ts)
+                return
+
+            if intent in ("jenkins_search", "jenkins_params", "jenkins_status"):
+                _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client,
+                                    trace_id=trace_id)
+                return
+
+            if intent not in ("unknown", "classify"):
+                _handle_infra_issue(params, text, channel, thread_ts, user_id, say, client,
+                                    trace_id=trace_id)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[%s] follow-up handler error: %s", trace_id, exc)
