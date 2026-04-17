@@ -261,5 +261,18 @@ class JenkinsAction(BaseAction):
         # Remove empty values
         job_params = {k: v for k, v in job_params.items() if v not in (None, "", [])}
 
+        # Convert space-separated values to newline-separated for TextParameterDefinition
+        # Jenkins textarea fields expect one entry per line (UDIDs, IPs, etc.)
+        text_param_names = {
+            p["name"] for p in jenkins_param_defs
+            if p.get("type", "") == "TextParameterDefinition"
+        }
+        for key in list(job_params.keys()):
+            if key in text_param_names:
+                val = job_params[key]
+                # Only convert if it's a single-line space-separated list (no newlines yet)
+                if isinstance(val, str) and " " in val and "\n" not in val:
+                    job_params[key] = "\n".join(val.split())
+
         logger.info("Jenkins resolved: %s → %s | params=%s", raw_name, job_name, job_params)
         return job_name, job_params, None

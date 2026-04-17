@@ -146,7 +146,11 @@ def search_jobs(query: str, max_results: int = 5) -> list[str]:
 def get_job_params(job_name: str) -> list[dict]:
     """Fetch parameter definitions for a Jenkins job.
 
-    Returns a list of dicts: [{name, default, description}, ...]
+    Returns a list of dicts: [{name, default, description, type}, ...]
+    type is the Jenkins parameter class short name, e.g.:
+      'TextParameterDefinition'   — multi-line textarea
+      'StringParameterDefinition' — single-line string
+      'BooleanParameterDefinition', 'ChoiceParameterDefinition', etc.
     """
     if not settings.JENKINS_URL:
         return []
@@ -155,7 +159,7 @@ def get_job_params(job_name: str) -> list[dict]:
         url = f"{settings.JENKINS_URL.rstrip('/')}/job/{job_name}/api/json"
         resp = requests.get(
             url,
-            params={"tree": "property[parameterDefinitions[name,defaultParameterValue[value],description]]"},
+            params={"tree": "property[parameterDefinitions[name,type,defaultParameterValue[value],description]]"},
             auth=_auth(),
             timeout=10,
         )
@@ -167,6 +171,7 @@ def get_job_params(job_name: str) -> list[dict]:
                     "name": p.get("name", ""),
                     "default": (p.get("defaultParameterValue") or {}).get("value", ""),
                     "description": p.get("description", ""),
+                    "type": p.get("type", ""),
                 })
         return params
     except Exception as exc:  # noqa: BLE001
