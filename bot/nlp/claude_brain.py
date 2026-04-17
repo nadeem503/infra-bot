@@ -184,9 +184,17 @@ trigger or just browse, default to jenkins_search and ask.
 Params:
   job_name: the user's description of the job (e.g. "ubuntu host setup", "device reboot", "sanity check").
             Do NOT try to match to a fixed list — pass the user's words exactly. The bot will search Jenkins.
-  host_ips: space-separated IPs from message/thread
-  environment: "stage" | "prod" (default "stage"; infer from context)
-  job_params: JSON object with any extra params mentioned (HOST_IP, ENV, Tags, UDID, etc.)
+  devices: list of ALL host IPs the job should run on. ALWAYS populate this — never leave it empty
+           when IPs are present in the message or thread. One entry per IP.
+  host: the first (or only) host IP
+  environment: "stage" | "prod" (default "prod"; infer from context)
+  job_params: JSON object with any extra params mentioned (TAGS, UDID, etc. — do NOT put IPs here)
+
+CRITICAL — "trigger separately for each IP" rule:
+  When the user says "trigger separately for each IP/host" (or similar), this is STILL one
+  single infra_issue action — NOT action=multi. Put ALL IPs in devices[] and host=first_ip.
+  The bot handles the per-IP looping automatically after approval.
+  NEVER split "trigger separately for N IPs" into N separate multi-action steps.
 
 -- JENKINS JOB SEARCH (intent=infra_issue, issue_category=jenkins_search) --
 Purpose: User wants to LIST or FIND Jenkins jobs matching a description WITHOUT triggering.

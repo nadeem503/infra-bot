@@ -640,16 +640,27 @@ def _handle_infra_issue(
         ssh_udid = params.get("udid") or (udid_list[0] if udid_list else "")
         ssh_devices = host_ips if host_ips else ([ssh_host] if ssh_host else [])
     elif action_type == "jenkins_trigger":
-        # Claude sometimes puts multiple host IPs in host_ips / hosts rather than devices[].
-        # If devices has ≤1 entry, scan those fields so _run_bulk fires once-per-IP.
+        # Claude sometimes puts IPs in host_ips / host_ip / hosts / job_params.HOST_IP
+        # rather than devices[].  Scan all candidate fields so _run_bulk fires once-per-IP.
         if len(devices) <= 1:
             _extra: list[str] = []
-            for _f in ("host_ips", "hosts"):
+            _jp = params.get("job_params") or {}
+            for _f in ("host_ips", "host_ip", "hosts"):
                 _raw = params.get(_f, "")
                 if _raw:
                     _extra.extend(re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', str(_raw)))
+            # Also scan job_params dict for any IP-valued keys
+            if isinstance(_jp, dict):
+                for _v in _jp.values():
+                    if isinstance(_v, str):
+                        _extra.extend(re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', _v))
+            # Also scan the single-entry devices list and host field to seed the list
+            if devices:
+                _extra.extend(devices)
+            _h = params.get("host", "")
+            if _h and _ip_re.match(_h.strip()):
+                _extra.append(_h.strip())
             if len(_extra) > 1:
-                # Deduplicate, preserve order
                 _seen: set = set()
                 devices = [ip for ip in _extra if not (_seen.add(ip) or ip in _seen)]  # type: ignore[assignment]
         ssh_host = params.get("host") or (devices[0] if devices else "")
@@ -800,6 +811,27 @@ def _handle_infra_issue(
             ).dry_run()
         except Exception as exc:  # noqa: BLE001
             logger.warning("dry_run() failed: %s", exc)
+
+    # Fallback preview for jenkins_trigger when dry_run() fails (e.g. Jenkins API unreachable).
+    # Show what we know from params so the approver isn't staring at a blank card.
+    if action_type == "jenkins_trigger" and not dry_run_preview:
+        _jn = action_params.get("job_name", "").strip()
+        _env = action_params.get("environment", action_params.get("env", "")).strip()
+        _tags = action_params.get("tags", action_params.get("TAGS", "")).strip()
+        _jp = action_params.get("job_params") or {}
+        _lines = [f":jenkins: *Job:* `{_jn}`" if _jn else ":jenkins: *Job:* _(resolving…)_"]
+        if ssh_devices:
+            _lines.append(f"*Hosts ({len(ssh_devices)}):* " + ", ".join(f"`{ip}`" for ip in ssh_devices))
+        if _env:
+            _lines.append(f"*ENV:* `{_env}`")
+        if _tags:
+            _lines.append(f"*TAGS:* `{_tags}`")
+        if isinstance(_jp, dict):
+            for _k, _v in _jp.items():
+                if _v not in (None, "", []):
+                    _lines.append(f"*{_k}:* `{_v}`")
+        if len(_lines) > 1:
+            dry_run_preview = "\n".join(_lines)
 
     # --- Create approval record ---
     action_id = approval_manager.create_action(
@@ -1304,6 +1336,14 @@ def register_message_listeners(app: App) -> None:
         user_id = event.get("user", "")
         text = event.get("text", "").strip()
         ts = event.get("ts", "")
+
+        # Skip @mention messages — Slack fires both app_mention AND message events for
+        # the same message.  handle_mention already handles those; processing them here
+        # too results in duplicate approval cards (one per event handler).
+        # We detect this by checking whether the bot's own user ID appears as a mention.
+        _bot_user_id = (body.get("authorizations") or [{}])[0].get("user_id", "")
+        if _bot_user_id and f"<@{_bot_user_id}>" in text:
+            return
 
         # Only process thread replies (not top-level channel messages)
         if not thread_ts or thread_ts == ts:
