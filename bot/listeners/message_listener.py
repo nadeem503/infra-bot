@@ -722,26 +722,33 @@ def _handle_infra_issue(
             else:
                 result_text = _formatter.format_error(result.get("message", f"`{action_type}` failed"))
 
-            # Tag platform-dc team for GH Actions workflow approval
-            if result.get("success"):
-                def _slack_mention(slack_id: str) -> str:
-                    if slack_id.startswith("S"):
-                        return f"<!subteam^{slack_id}>"
-                    elif slack_id.startswith("C"):
-                        return f"<#{slack_id}>"
-                    return f"<@{slack_id}>"
-
-                approval_parts: list[str] = []
-                if settings.PLATFORM_DC_SLACK_ID:
-                    approval_parts.append(_slack_mention(settings.PLATFORM_DC_SLACK_ID))
-                if settings.MOBILE_INFRA_SLACK_ID:
-                    approval_parts.append(_slack_mention(settings.MOBILE_INFRA_SLACK_ID))
-
-                if approval_parts:
-                    mentions = " ".join(approval_parts)
-                    result_text += f"\n\n{mentions} please review and approve the workflow run above."
+            # Tag mobile-infra team for GH Actions workflow approval
+            if result.get("success") and settings.MOBILE_INFRA_SLACK_ID:
+                notify_id = settings.MOBILE_INFRA_SLACK_ID
+                if notify_id.startswith("S"):
+                    mention = f"<!subteam^{notify_id}>"
+                elif notify_id.startswith("C"):
+                    mention = f"<#{notify_id}>"
+                else:
+                    mention = f"<@{notify_id}>"
+                result_text += f"\n\n{mention} please review and approve the workflow run above."
 
             say(text=result_text, thread_ts=thread_ts)
+
+            # Store workflow run for 1h approval reminder
+            if result.get("success") and action_type in ("device_dispose", "device_migrate"):
+                try:
+                    from bot.workers.wf_approval_poller import store_pending_run  # noqa: PLC0415
+                    runs_url = result.get("runs_url", "") or ""
+                    store_pending_run(
+                        runs_url=runs_url,
+                        channel=channel,
+                        thread_ts=thread_ts,
+                        triggered_by=user_id,
+                        action_type=action_type,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             logger.info("Auto-executed %s for %s region=%s", action_type, issue_category, region_slug)
             return f"[Auto-executed] `{action_type}` for `{issue_category}` in {region_slug}"
         else:
