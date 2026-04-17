@@ -305,7 +305,11 @@ class SlackFormatter:
         return text
 
     def format_db_result(self, result: dict) -> str:
-        """Format DBAction rows as a box-drawing ASCII table inside a Slack code block."""
+        """Format DB results.
+
+        Single-device lookup (1 row with udid) → vertical key-value card.
+        Breakdown / multi-row → box-drawing ASCII table in code block.
+        """
         details = result.get("details", {})
         rows: list[dict] = details.get("rows") or []
 
@@ -315,9 +319,37 @@ class SlackFormatter:
         if not rows:
             return ":mag: *DB Query* — no rows matched."
 
+        _STATUS_ICONS = {
+            "active":      ":large_green_circle:",
+            "busy":        ":large_blue_circle:",
+            "faulty":      ":red_circle:",
+            "cleanup":     ":large_yellow_circle:",
+            "maintenance": ":large_yellow_circle:",
+            "inactive":    ":white_circle:",
+            "disposed":    ":black_circle:",
+        }
+
+        # ── Single device lookup → vertical card ─────────────────────────────
+        if len(rows) == 1 and "udid" in rows[0]:
+            row    = rows[0]
+            status = str(row.get("status", "")).lower()
+            icon   = _STATUS_ICONS.get(status, ":grey_question:")
+            remark = str(row.get("remark") or "—")
+            if len(remark) > 60:
+                remark = remark[:57] + "..."
+            org    = str(row.get("dedicated_org") or "—")
+            lines  = [
+                f"{icon} *Device — {status or '—'}*",
+                f"• *UDID:* {row.get('udid', '—')}",
+                f"• *Host:* {row.get('host_ip', '—')}",
+                f"• *Org:* {org}  •  *Cleanup:* {row.get('cleanup', '—')}  •  *Region:* {row.get('region', '—')}",
+                f"• *Remark:* {remark}",
+            ]
+            return "\n".join(lines)
+
+        # ── Breakdown / multi-row → code block table ──────────────────────────
         display_rows = rows[:20]
 
-        # Build ordered column list from first row; truncate remark to 40 chars
         col_order = ["host_ip", "udid", "status", "dedicated_org", "cleanup", "remark"]
         cols = [c for c in col_order if c in display_rows[0]]
         for c in display_rows[0]:
@@ -333,7 +365,6 @@ class SlackFormatter:
                 s = s[:37] + "..."
             return s
 
-        # Compute column widths: max of header and each cell value
         widths = {c: len(c) for c in cols}
         for row in display_rows:
             for c in cols:
