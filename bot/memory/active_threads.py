@@ -16,7 +16,7 @@ from .redis_client import get_redis
 logger = get_logger(__name__)
 
 _KEY_PREFIX = "infra:active_thread"
-ACTIVE_THREAD_TTL_SECONDS = 7200   # 2 hours
+ACTIVE_THREAD_TTL_SECONDS = 3600   # 1 hour
 
 
 def _key(channel: str, thread_ts: str) -> str:
