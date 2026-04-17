@@ -132,7 +132,15 @@ When two actions could fit, use action=direct and ask one short clarifying quest
 -- JIRA (intent=create_jira) --
 Purpose: User wants to open, raise, create, log, or file a ticket/task for tracking.
 Always classify as create_jira regardless of thread context (device/host data in thread doesn't change this).
-Params: title (strip @mentions; synthesize from thread if missing: device UDID + host + issue), description, issue_type (default "Task")
+Params:
+  title: strip @mentions; synthesize from thread if missing (device UDID + host + issue type)
+  description: Write a detailed, human-readable description (3-6 sentences minimum). Include:
+    - What the problem/task is and why it matters
+    - Which devices/hosts are affected (UDIDs, host IPs from thread)
+    - What was observed or reported (symptoms, error messages, context from thread)
+    - Any relevant details like environment, region, remark, or action being taken
+    Never use "N/A", never leave vague. If context is in the thread, use it.
+  issue_type: default "Task"
 
 -- DEVICE CHECK (intent=device_check) --
 Purpose: User wants to verify if a device is online, reachable, connected, or healthy — no other action implied.
@@ -816,6 +824,75 @@ class AIBrain:
             ":robot_face: *Hey there!* I'm still in early access — not fully available to everyone just yet.\n"
             "I'll be rolling out to the wider team soon. Stay tuned! :rocket:"
         )
+
+    def is_directed_at_bot(self, text: str, thread_history: list[dict] | None = None) -> bool:
+        """Pre-check: is this follow-up message directed at the bot or just chat between humans?
+
+        Used in active-thread mode (no @mention) to avoid the bot jumping into
+        conversations that aren't meant for it (e.g. "thanks", "yeah looks good").
+
+        Returns True  → process the message as a bot request
+        Returns False → ignore (human-to-human chatter)
+
+        Fast path: obvious chatter words short-circuit before calling Claude.
+        Falls back to True (process) if Claude is unavailable.
+        """
+        clean = text.strip().lower()
+
+        # Fast-reject: very short social replies that are never bot-directed
+        _CHATTER = {
+            "ok", "okay", "thanks", "thank you", "ty", "thx", "np", "sure",
+            "got it", "noted", "👍", "👌", "✅", "lgtm", "looks good",
+            "yeah", "yes", "no", "nope", "hmm", "hm", "ah", "nice",
+            "great", "awesome", "cool", "perfect", "done", "alright",
+        }
+        if clean in _CHATTER or len(clean) <= 3:
+            logger.debug("is_directed_at_bot: fast-reject chatter: %r", text)
+            return False
+
+        # Fast-accept: obvious infra/bot keywords
+        _BOT_SIGNALS = (
+            "check", "reboot", "restart", "dispose", "migrate", "trigger",
+            "jenkins", "jira", "ticket", "status", "device", "host",
+            "udid", "fix", "run", "show", "list", "search", "query",
+            "can you", "please", "now", "also", "what about", "how about",
+            "help", "assist", "do this", "do it",
+        )
+        if any(sig in clean for sig in _BOT_SIGNALS):
+            logger.debug("is_directed_at_bot: fast-accept keyword match: %r", text)
+            return True
+
+        # Ask Claude for ambiguous cases
+        history_snippet = ""
+        if thread_history:
+            recent = thread_history[-3:]  # last 3 messages for context
+            history_snippet = "\n".join(
+                f"  [{m.get('role','?')}]: {str(m.get('content',''))[:120]}"
+                for m in recent
+            )
+
+        prompt = (
+            "You are deciding whether a Slack message in an infra-bot thread is directed "
+            "at the bot or is just a side conversation between humans.\n\n"
+            + (f"Recent thread:\n{history_snippet}\n\n" if history_snippet else "")
+            + f"New message: \"{text}\"\n\n"
+            "Is this message a request, question, or instruction directed at the bot? "
+            "Reply with exactly one word: YES or NO."
+        )
+
+        try:
+            result = _call_claude_cli(
+                prompt, timeout=10, _log_action="bot_directed_check",
+                model=_CLASSIFY_MODEL,
+            )
+            answer = (result or "").strip().upper()
+            directed = answer.startswith("YES")
+            logger.debug("is_directed_at_bot: Claude says %r for %r", answer, text)
+            return directed
+        except Exception as exc:  # noqa: BLE001
+            # If Claude is unavailable, default to processing (fail open)
+            logger.warning("is_directed_at_bot Claude check failed: %s — defaulting to True", exc)
+            return True
 
 
 # ---------------------------------------------------------------------------

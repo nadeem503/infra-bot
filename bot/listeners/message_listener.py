@@ -1302,14 +1302,21 @@ def register_message_listeners(app: App) -> None:
         logger.info("[%s] thread follow-up from %s in %s (no @mention): %.80s",
                     trace_id, user_id, channel, text)
 
+        # Pre-check: is this message actually directed at the bot?
+        # Avoids responding to human-to-human chatter in active threads.
+        thread_history_pre = thread_memory.format_for_claude(channel, thread_ts)
+        if not brain.is_directed_at_bot(text, thread_history_pre):
+            logger.info("[%s] follow-up ignored — not directed at bot: %.80s", trace_id, text)
+            return
+
         # Route through the same pipeline as a normal @mention
         # Re-activate to refresh TTL with every message
         activate_thread(channel, thread_ts, activated_by=user_id)
 
-        thread_history = thread_memory.format_for_claude(channel, thread_ts)
-        thread_memory.add_message(channel, thread_ts, "user", text)
-
         try:
+            thread_history = thread_history_pre  # reuse what we fetched for the pre-check
+            thread_memory.add_message(channel, thread_ts, "user", text)
+
             prefetched_thread: list[dict] | None = None
             try:
                 _r = client.conversations_replies(channel=channel, ts=thread_ts, limit=50)
