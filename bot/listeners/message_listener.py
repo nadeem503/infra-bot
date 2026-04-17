@@ -639,6 +639,22 @@ def _handle_infra_issue(
         ssh_host = params.get("host") or (host_ips[0] if host_ips else (devices[0] if devices else ""))
         ssh_udid = params.get("udid") or (udid_list[0] if udid_list else "")
         ssh_devices = host_ips if host_ips else ([ssh_host] if ssh_host else [])
+    elif action_type == "jenkins_trigger":
+        # Claude sometimes puts multiple host IPs in host_ips / hosts rather than devices[].
+        # If devices has ≤1 entry, scan those fields so _run_bulk fires once-per-IP.
+        if len(devices) <= 1:
+            _extra: list[str] = []
+            for _f in ("host_ips", "hosts"):
+                _raw = params.get(_f, "")
+                if _raw:
+                    _extra.extend(re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', str(_raw)))
+            if len(_extra) > 1:
+                # Deduplicate, preserve order
+                _seen: set = set()
+                devices = [ip for ip in _extra if not (_seen.add(ip) or ip in _seen)]  # type: ignore[assignment]
+        ssh_host = params.get("host") or (devices[0] if devices else "")
+        ssh_udid = params.get("udid") or ""
+        ssh_devices = devices
     else:
         ssh_host = params.get("host") or (devices[0] if devices else "")
         ssh_udid = params.get("udid") or ""

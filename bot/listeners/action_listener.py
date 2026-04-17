@@ -220,10 +220,18 @@ def _run_bulk(record, user_id: str, client, channel: str, thread_ts: str) -> Non
         progress_lines[i] = f":hourglass: `[{i+1}/{n}]` `{device}` \u2192 in progress..."
         client.chat_update(channel=channel, ts=progress_ts, text=f"{header}\n" + "\n".join(progress_lines))
 
-        # For ssh_reboot: host=device (IP), preserve existing udid from record.params.
-        # Other actions: udid=device is fine (device IS the UDID/serial for those actions).
+        # Build per-device params:
+        # - ssh_reboot: host=device (IP), keep existing udid from record.params
+        # - jenkins_trigger: strip multi-device fields (host_ips, udids, host_udid_pairs)
+        #   so _map_params_with_ai only sees the single current host and maps HOST_IP to it.
+        #   Without this, the AI maps HOST_IP to the full list on every iteration.
+        # - all others: udid=device is fine (device IS the UDID/serial for those actions)
+        _MULTI_DEVICE_KEYS = frozenset({"host_ips", "udids", "host_udid_pairs"})
         if record.action_type == "ssh_reboot":
             device_params = {**record.params, "host": device, "devices": [device]}
+        elif record.action_type == "jenkins_trigger":
+            device_params = {k: v for k, v in record.params.items() if k not in _MULTI_DEVICE_KEYS}
+            device_params.update({"udid": device, "host": device, "devices": [device]})
         else:
             device_params = {**record.params, "udid": device, "host": device, "devices": [device]}
         action = ActionClass(params=device_params, triggered_by=user_id, channel=channel, region=record.region)
@@ -339,6 +347,19 @@ def register_action_listeners(app: App) -> None:
         channel: str = body["channel"]["id"]
         message_ts: str = body["message"]["ts"]
         thread_ts: str = body["message"].get("thread_ts", message_ts)
+
+        # Claim exclusive processing — Socket Mode can deliver the same button-click
+        # event to multiple active connections (e.g. after a restart).  The NX lock
+        # ensures only one handler processes each approval; the rest are silently dropped
+        # instead of spamming "not found or already processed" warnings.
+        lock_key = f"infra:action:processing:{action_id}"
+        try:
+            claimed = get_redis().set(lock_key, "1", nx=True, ex=30)
+        except Exception:  # noqa: BLE001
+            claimed = True   # Redis unavailable — proceed optimistically
+        if not claimed:
+            logger.debug("Action %s already claimed by another handler — dropping", action_id)
+            return
 
         logger.info("%s: action_id=%s user=%s", label, action_id, user_id)
 
