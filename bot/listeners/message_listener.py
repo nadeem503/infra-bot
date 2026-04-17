@@ -1162,6 +1162,22 @@ def register_message_listeners(app: App) -> None:
             bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids, log_lines=log_lines)
             say(text=bot_reply, thread_ts=thread_ts)
 
+            # If a single UDID is known, auto-append DB record so user doesn't need a second request.
+            # This handles "check connectivity & status in DB" in one shot.
+            if udid and not udids:
+                try:
+                    from bot.actions.db_action import DBAction  # noqa: PLC0415
+                    db_action = DBAction(
+                        params={"query": f"SELECT udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at FROM device_host WHERE udid = '{udid}' LIMIT 1"},
+                        triggered_by=user_id, channel=channel, region="",
+                    )
+                    db_result = db_action.execute()
+                    db_text = _formatter.format_db_result(db_result)
+                    say(text=db_text, thread_ts=thread_ts)
+                    bot_reply = f"{bot_reply}\n{db_text}"
+                except Exception as _db_exc:  # noqa: BLE001
+                    logger.warning("device_check: DB auto-append failed: %s", _db_exc)
+
         elif intent == "create_jira":
             result = _exec_create_jira(params, slack_client=client)
             if result.get("success"):

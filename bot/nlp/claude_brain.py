@@ -143,7 +143,12 @@ Params:
   issue_type: default "Task"
 
 -- DEVICE CHECK (intent=device_check) --
-Purpose: User wants to verify if a device is online, reachable, connected, or healthy — no other action implied.
+Purpose: User wants to verify if a device is online, reachable, connected, or healthy.
+Also use this when the user combines connectivity check WITH a DB status check in one message
+(e.g. "check connectivity & status in DB", "check device connectivity and DB status").
+The DB lookup is handled automatically alongside the connectivity check — do NOT split into
+a separate infra_issue/device_down or device_status action.
+NEVER classify a "check connectivity" request as infra_issue/device_down.
 Use host and udid from thread context if not in message.
 Params: host (IP), udid, devices=[host,udid]
 
