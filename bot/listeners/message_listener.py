@@ -1144,7 +1144,7 @@ def register_message_listeners(app: App) -> None:
         bot_reply: str | None = None
 
         if intent == "device_check":
-            from bot.actions.device_check_action import DeviceCheckAction  # noqa: PLC0415
+            from bot.actions.device_check_action import DeviceCheckAction, check_android_with_db  # noqa: PLC0415
             host = params.get("host", "") or ""
             udid = params.get("udid", "") or ""
             hosts = params.get("hosts") or []
@@ -1154,29 +1154,40 @@ def register_message_listeners(app: App) -> None:
             # _flat_str is defined at module level (Fix #5)
             hosts = [_flat_str(h) for h in hosts if h]
             udids = [_flat_str(u) for u in udids if u]
+            # Guard: Claude sometimes puts host IPs into udids (e.g. extracts IP from
+            # hostname string "ubuntu-10-146-2-55") causing host_ip→host_ip pairing.
+            udids = [u for u in udids if not _ip_re.match(u)]
+            hosts = [h for h in hosts if _ip_re.match(h)]
             # If host not set but devices list has IPs vs serials, split them
             if not host:
                 devices_list = [_flat_str(d) for d in params.get("devices", []) if d]
-                host = next((d for d in devices_list if isinstance(d, str) and d.startswith("10.")), "")
-                udid = udid or next((d for d in devices_list if isinstance(d, str) and not d.startswith("10.")), "")
-            bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids, log_lines=log_lines)
-            say(text=bot_reply, thread_ts=thread_ts)
+                host = next((d for d in devices_list if isinstance(d, str) and _ip_re.match(d)), "")
+                udid = udid or next((d for d in devices_list if isinstance(d, str) and not _ip_re.match(d)), "")
 
-            # If a single UDID is known, auto-append DB record so user doesn't need a second request.
-            # This handles "check connectivity & status in DB" in one shot.
-            if udid and not udids:
-                try:
-                    from bot.actions.db_action import DBAction  # noqa: PLC0415
-                    db_action = DBAction(
-                        params={"query": f"SELECT udid, host_ip, status, remark, dedicated_org, cleanup, region, updated_at FROM device_host WHERE udid = '{udid}' LIMIT 1"},
-                        triggered_by=user_id, channel=channel, region="",
-                    )
-                    db_result = db_action.execute()
-                    db_text = _formatter.format_db_result(db_result)
-                    say(text=db_text, thread_ts=thread_ts)
-                    bot_reply = f"{bot_reply}\n{db_text}"
-                except Exception as _db_exc:  # noqa: BLE001
-                    logger.warning("device_check: DB auto-append failed: %s", _db_exc)
+            # Single-device: use combined go-adb + container adb + DB check (Android)
+            if host and udid and not (hosts and len(hosts) > 1):
+                from bot.actions.device_check_action import _resolve_host_type  # noqa: PLC0415
+                host_type = _resolve_host_type(host, udid)
+                if host_type == "ubuntu":
+                    try:
+                        from bot.actions.db_action import DBAction  # noqa: PLC0415
+                        db_result = DBAction(
+                            params={"query": (
+                                "SELECT udid, host_ip, name, os_version, status, dedicated_org, "
+                                f"region FROM device_host WHERE udid = '{udid}' LIMIT 1"
+                            )},
+                            triggered_by=user_id, channel=channel, region="",
+                        ).execute()
+                        db_row = (db_result.get("details", {}).get("rows") or [None])[0]
+                    except Exception:  # noqa: BLE001
+                        db_row = None
+                    bot_reply = check_android_with_db(host, udid, db_row=db_row)
+                else:
+                    bot_reply = DeviceCheckAction().execute(host, udid, log_lines=log_lines)
+                say(text=bot_reply, thread_ts=thread_ts)
+            else:
+                bot_reply = DeviceCheckAction().execute(host, udid, hosts=hosts, udids=udids, log_lines=log_lines)
+                say(text=bot_reply, thread_ts=thread_ts)
 
         elif intent == "create_jira":
             result = _exec_create_jira(params, slack_client=client)

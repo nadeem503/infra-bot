@@ -231,6 +231,56 @@ def _check_android(host: str, udid: str) -> tuple[str, str]:
     return icon, f"{label}{uptime_suffix}"
 
 
+def check_android_with_db(host: str, udid: str, db_row: dict | None = None) -> str:
+    """Combined check: go-adb + container adb + DB.
+
+    Renders a box-drawing ASCII table inside a Slack code block.
+    Columns: Host | UDID | Device | OS | go-adb | Container adb | DB Status | Org | Region
+    """
+    quoted_udid = shlex.quote(udid)
+
+    # go-adb: is UDID visible at host level?
+    go_adb = ssh_exec(host, "/usr/bin/go-adb listdevices 2>/dev/null | jq -r '.devicelist[].SerialNumber' 2>/dev/null")
+    if go_adb["exit_code"] == -1:
+        return f":x: SSH to `{host}` failed: {go_adb['error'][:80]}"
+    go_adb_val = "OK" if udid in go_adb["output"].strip().splitlines() else "FAIL"
+
+    # Container adb: device state inside adbd container
+    gs = ssh_exec(host, f"docker exec -i adbd_{udid} adb -s {quoted_udid} get-state 2>&1")
+    raw = (gs["output"] or "").strip()
+    state = raw.splitlines()[-1].strip() if raw else ""
+    adb_label_map = {"device": "device", "offline": "offline", "unauthorized": "unauth", "bootloader": "bootloader", "recovery": "recovery"}
+    adb_val = adb_label_map.get(state, "not found") if state and "error" not in raw.lower() else "not found"
+
+    # DB fields
+    name    = (db_row or {}).get("name", "") or "-"
+    os_ver  = str((db_row or {}).get("os_version", "") or "-")
+    status  = (db_row or {}).get("status", "-")
+    org     = str((db_row or {}).get("dedicated_org", "") or "public")
+    region  = (db_row or {}).get("region", "-")
+
+    headers = ["Host", "UDID", "Device", "OS", "go-adb", "Container adb", "DB Status", "Org", "Region"]
+    row     = [host, udid, name, os_ver, go_adb_val, adb_val, status, org, region]
+
+    # Compute column widths: max of header and value
+    widths = [max(len(h), len(v)) for h, v in zip(headers, row)]
+
+    def _fmt_row(cells: list[str]) -> str:
+        return "│ " + " │ ".join(c.ljust(w) for c, w in zip(cells, widths)) + " │"
+
+    def _border(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (w + 2) for w in widths) + right
+
+    table = "\n".join([
+        _border("┌", "┬", "┐"),
+        _fmt_row(headers),
+        _border("├", "┼", "┤"),
+        _fmt_row(row),
+        _border("└", "┴", "┘"),
+    ])
+    return f"```\n{table}\n```"
+
+
 # ── Unified entry point ───────────────────────────────────────────────────────
 
 def _check_single(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
