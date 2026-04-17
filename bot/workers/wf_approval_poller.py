@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 _PENDING_SET   = "infra:wf_pending"
 _RUN_KEY_PREFIX = "infra:wf_run"
-_POLL_INTERVAL = 300        # check every 5 min
+_POLL_INTERVAL = 900        # check every 15 min
 _REMINDER_AFTER = 3600      # remind after 1 hour of no approval
 _RUN_TTL       = 86400      # keep run records for 24 h
 
