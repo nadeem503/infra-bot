@@ -331,7 +331,7 @@ class SlackFormatter:
             s = str(v)
             if col == "remark" and len(s) > 40:
                 s = s[:37] + "..."
-return s
+            return s
 
         # Compute column widths: max of header and each cell value
         widths = {c: len(c) for c in cols}
