@@ -305,60 +305,57 @@ class SlackFormatter:
         return text
 
     def format_db_result(self, result: dict) -> str:
-        """Format DBAction rows as a readable Slack table.
-
-        Renders each row as a bullet with key=value pairs on one line.
-        Highlights status with an icon. Caps at 20 rows to avoid message bloat.
-        """
+        """Format DBAction rows as a box-drawing ASCII table inside a Slack code block."""
         details = result.get("details", {})
         rows: list[dict] = details.get("rows") or []
-        query_preview = details.get("query_preview", "")
 
         if not result.get("success"):
             return self.format_error(result.get("message", "DB query failed"))
 
         if not rows:
-            return ":mag: *DB Query* — no rows matched.\n" + (f"```{query_preview}```" if query_preview else "")
-
-        _STATUS_ICONS = {
-            "active":      ":large_green_circle:",
-            "faulty":      ":red_circle:",
-            "maintenance": ":large_yellow_circle:",
-            "disposed":    ":black_circle:",
-            "inactive":    ":white_circle:",
-            "busy":        ":large_blue_circle:",
-        }
-
-        lines = [f":mag: *DB Query — {len(rows)} row(s)*"]
-        if query_preview:
-            lines.append(f"```{query_preview}```")
+            return ":mag: *DB Query* — no rows matched."
 
         display_rows = rows[:20]
+
+        # Build ordered column list from first row; truncate remark to 40 chars
+        col_order = ["host_ip", "udid", "status", "dedicated_org", "cleanup", "remark"]
+        cols = [c for c in col_order if c in display_rows[0]]
+        for c in display_rows[0]:
+            if c not in cols:
+                cols.append(c)
+
+        def _cell(row: dict, col: str) -> str:
+            v = row.get(col)
+            if v is None or v == "":
+                return "-"
+            s = str(v)
+            if col == "remark" and len(s) > 40:
+                s = s[:37] + "..."
+return s
+
+        # Compute column widths: max of header and each cell value
+        widths = {c: len(c) for c in cols}
         for row in display_rows:
-            status = str(row.get("status", "")).lower()
-            s_icon = _STATUS_ICONS.get(status, ":grey_question:")
-            # Build concise field list — skip None/empty values
-            fields = []
-            col_order = ["udid", "host_ip", "status", "dedicated_org", "cleanup", "remark"]
-            # Add any extra columns the query returned that aren't in col_order
-            for k in row:
-                if k not in col_order:
-                    col_order.append(k)
-            for k in col_order:
-                v = row.get(k)
-                if v is None or v == "":
-                    continue
-                # Truncate long remark values
-                v_str = str(v)
-                if k == "remark" and len(v_str) > 60:
-                    v_str = v_str[:57] + "…"
-                fields.append(f"`{k}`: {v_str}")
-            lines.append(f"{s_icon}  " + "  ·  ".join(fields))
+            for c in cols:
+                widths[c] = max(widths[c], len(_cell(row, c)))
 
-        if len(rows) > 20:
-            lines.append(f"_… and {len(rows) - 20} more row(s) — check bot logs for full result_")
+        def _fmt_row(cells: list[str]) -> str:
+            return "│ " + " │ ".join(v.ljust(widths[c]) for v, c in zip(cells, cols)) + " │"
 
-        return "\n".join(lines)
+        def _border(l: str, m: str, r: str) -> str:
+            return l + m.join("─" * (widths[c] + 2) for c in cols) + r
+
+        table_lines = [
+            _border("┌", "┬", "┐"),
+            _fmt_row(cols),
+            _border("├", "┼", "┤"),
+        ]
+        for row in display_rows:
+            table_lines.append(_fmt_row([_cell(row, c) for c in cols]))
+        table_lines.append(_border("└", "┴", "┘"))
+
+        suffix = f"\n_{len(rows) - 20} more row(s) not shown_" if len(rows) > 20 else ""
+        return f":mag: *DB — {len(rows)} row(s)*\n```\n" + "\n".join(table_lines) + "\n```" + suffix
 
     def format_denied(self, action_type: str, denier_id: str) -> str:
         return (
