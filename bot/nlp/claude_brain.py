@@ -228,6 +228,13 @@ Params:
       NEVER add WHERE status = '...' when user says "check status" — they want to READ the status, not filter by it.
   If no clear filter (UDID/IP/org/status) → action=direct, ask what to look up.
 
+-- FAULTY CUSTOMER DEVICES REPORT (intent=infra_issue, issue_category=faulty_devices_report) --
+Purpose: User wants a report of faulty dedicated (customer) devices, excluding internal LambdaTest orgs.
+Trigger phrases: "check faulty customer devices", "faulty devices report", "dedicated faulty devices",
+                 "show faulty dedicated devices", "faulty device report", "list faulty customer devices".
+No params required — the bot runs a fixed query automatically.
+Params: {} (empty — no query, no host, no udid needed)
+
 -- DEVICE DISPOSE (intent=infra_issue, issue_category=device_dispose) --
 Purpose: User wants to permanently retire/decommission/dispose a device.
 Params:
@@ -334,9 +341,9 @@ For note_pattern: set "pattern"="one-sentence description", "steps":["step1","st
 
 Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | note_pattern | unknown
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch | db_query |
-jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down | resigner_down |
-ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down | android_container_down |
-cert_expired | host_service_status | device_dispose | device_migrate
+faulty_devices_report | jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down |
+resigner_down | ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down |
+android_container_down | cert_expired | host_service_status | device_dispose | device_migrate
 
 For ACTION 2 (direct):
 {"action":"direct","reply":"<slack-formatted response, *bold*, bullet points, max 8 lines>"}

@@ -125,3 +125,58 @@ class DBAction(BaseAction):
                 rows = cursor.fetchmany(50)
         logger.info("Query returned %d row(s)", len(rows))
         return list(rows)
+
+
+# Internal org IDs excluded from customer-facing faulty device reports.
+_INTERNAL_ORGS = (
+    "757034", "1623318", "533712", "523114", "4963", "128633", "253694", "876046",
+    "665135", "1162580", "637188", "246893", "273731", "550422", "621263", "1392154",
+    "1350616", "588659", "1606373", "1554082", "616839", "703273", "1067878",
+    "1504121", "70506", "2717299", "1324700", "1307300", "1669961", "33629207",
+    "2393021", "1915058", "2394265", "2086119", "2826888",
+)
+
+_FAULTY_DEVICES_QUERY = (
+    "SELECT host_ip, udid, device_id, status, remark, dedicated_org, cleanup, manual, features "
+    "FROM device_host "
+    "WHERE dedicated_org NOT IN ({placeholders}) "
+    "AND status = 'faulty' "
+    "AND region = 'us-west-1'"
+).format(placeholders=", ".join(f"'{o}'" for o in _INTERNAL_ORGS))
+
+
+class FaultyDevicesReportAction(DBAction):
+    """Run the standard faulty customer-dedicated devices report.
+
+    Uses a hardcoded query that excludes internal LambdaTest orgs.
+    No user-supplied query is accepted — params are ignored.
+    """
+
+    action_type = "faulty_devices_report"
+
+    def execute(self) -> dict:
+        if not all([settings.DB_HOST, settings.DB_USER, settings.DB_PASSWORD]):
+            return {
+                "success": False,
+                "message": ":lock: Database not configured — `DB_HOST`, `DB_USER`, `DB_PASSWORD` missing in bot config",
+                "details": {},
+            }
+
+        try:
+            rows = self._run_query(_FAULTY_DEVICES_QUERY)
+            return {
+                "success": True,
+                "message": f"Faulty customer devices: {len(rows)} found",
+                "details": {
+                    "row_count": len(rows),
+                    "rows": rows,
+                    "query_preview": _FAULTY_DEVICES_QUERY[:200],
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("FaultyDevicesReportAction failed: %s", exc)
+            return {
+                "success": False,
+                "message": f":x: Faulty devices query failed: {type(exc).__name__}: {exc}",
+                "details": {"error_type": type(exc).__name__},
+            }

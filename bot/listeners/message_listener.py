@@ -50,7 +50,7 @@ CONFIDENCE_THRESHOLD = 0.6
 # Action types that skip the bot approval card and execute immediately.
 # The GitHub Actions workflow itself has environment protection gates for prod approval.
 # After triggering, the bot notifies MOBILE_INFRA_SLACK_ID for awareness.
-_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate", "db_query"})
+_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate", "db_query", "faulty_devices_report"})
 
 # Only these users may trigger infra actions (device checks, restarts, Jira, etc.)
 # All other users receive greetings/capability replies only.
@@ -244,6 +244,7 @@ ISSUE_TO_ACTION: dict[str, str] = {
     "network_issue":            "device_status",
     "db_mismatch":              "db_query",
     "db_query":                 "db_query",
+    "faulty_devices_report":    "faulty_devices_report",
     "jenkins_failure":          "jenkins_trigger",
     "jenkins_trigger":          "jenkins_trigger",
     "jenkins_search":           "jenkins_search",
@@ -273,7 +274,7 @@ ISSUE_TO_ACTION: dict[str, str] = {
 
 def _get_action_class(action_type: str):
     from bot.actions.adb_action import ADBAction  # noqa: PLC0415
-    from bot.actions.db_action import DBAction  # noqa: PLC0415
+    from bot.actions.db_action import DBAction, FaultyDevicesReportAction  # noqa: PLC0415
     from bot.actions.device_status import DeviceStatusAction  # noqa: PLC0415
     from bot.actions.jenkins_action import JenkinsAction  # noqa: PLC0415
     from bot.actions.ssh_action import SSHAction  # noqa: PLC0415
@@ -297,6 +298,7 @@ def _get_action_class(action_type: str):
         "adb_logcat":                ADBAction,
         "adb_clear_storage":         ADBAction,
         "db_query":                  DBAction,
+        "faulty_devices_report":     FaultyDevicesReportAction,
         "jenkins_trigger":           JenkinsAction,
         "device_disconnected":       DeviceDisconnectedAction,
         # Device lifecycle — GitHub Actions workflow_dispatch
@@ -707,8 +709,8 @@ def _handle_infra_issue(
                 logger.error("Auto-execute %s failed: %s", action_type, exc)
                 result = {"success": False, "message": f"Execution error: {type(exc).__name__}", "details": {}}
 
-            # db_query: format rows as a Slack table (no mobile-infra notification needed)
-            if action_type == "db_query":
+            # db_query / faulty_devices_report: format rows as a Slack table
+            if action_type in ("db_query", "faulty_devices_report"):
                 result_text = _formatter.format_db_result(result)
                 say(text=result_text, thread_ts=thread_ts)
                 logger.info("Auto-executed %s for %s region=%s", action_type, issue_category, region_slug)
