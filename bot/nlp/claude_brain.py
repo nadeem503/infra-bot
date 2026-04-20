@@ -629,7 +629,12 @@ class AIBrain:
         thread_ctx = ""
         for msg in (thread_history or [])[-10:]:
             role = "User" if msg.get("role") == "user" else "Bot"
-            thread_ctx += f"{role}: {msg['content']}\n"
+            content = msg.get("content", "")
+            # Truncate very long messages (e.g. device lists, SQL dumps) so the
+            # combined router prompt stays within a size Claude CLI handles in time.
+            if len(content) > 400:
+                content = content[:400] + "…[truncated]"
+            thread_ctx += f"{role}: {content}\n"
         cache_key = self._cache_key("classify", text[:200], thread_ctx[-200:])
         cached = self._cache_get(cache_key)
         if cached is not None:
@@ -645,7 +650,10 @@ class AIBrain:
                 f"Message: {text}\n\n"
                 f"Reply with ONLY valid JSON."
             )
-            raw = _call_claude_cli(prompt, timeout=30, _log_action="router",
+            # 60s matches the direct-reply path — the router prompt is large (~280 lines)
+            # and threads with long messages (device lists, SQL) previously caused 30s
+            # timeouts → Gemini fallback → quota 429 → "AI unavailable".
+            raw = _call_claude_cli(prompt, timeout=60, _log_action="router",
                                    model=_CLASSIFY_MODEL)
 
             # Extract first valid JSON object from response
