@@ -429,6 +429,55 @@ def _exec_assign_ticket(params: dict, slack_client=None) -> dict:
     return result
 
 
+def _handle_thread_monitor(params: dict, channel: str, thread_ts: str, user_id: str, say) -> str:
+    """Start a Redis-backed thread monitor. ping_message comes fully from Claude params."""
+    from bot.memory.monitor_store import create_monitor  # noqa: PLC0415
+
+    target_name    = params.get("target_name", "").strip()
+    target_user_id = params.get("target_user_id", "").strip()
+    interval_min   = int(params.get("interval_minutes") or 5)
+    ping_message   = params.get("ping_message", "").strip()
+
+    if not ping_message:
+        reply = ":warning: Couldn't compose a reminder — please describe who to ping and what about."
+        say(text=reply, thread_ts=thread_ts)
+        return reply
+
+    interval_sec = max(60, interval_min * 60)
+
+    job_id = create_monitor(
+        channel=channel,
+        thread_ts=thread_ts,
+        started_by=user_id,
+        target_user_id=target_user_id,
+        target_name=target_name,
+        interval_seconds=interval_sec,
+        ping_message=ping_message,
+    )
+
+    display = target_name or target_user_id or "the target"
+    reply = (
+        f":white_check_mark: Got it — I'll ping *{display}* every *{interval_min} min* in this thread.\n"
+        f"Say `stop monitoring` or `confirm` when you're done. _(Job: `{job_id}`)_"
+    )
+    say(text=reply, thread_ts=thread_ts)
+    return reply
+
+
+def _handle_stop_monitor(channel: str, thread_ts: str, user_id: str, say) -> str:
+    """Cancel all active monitors started by this user in this thread."""
+    from bot.memory.monitor_store import cancel_monitors_by_user  # noqa: PLC0415
+
+    count = cancel_monitors_by_user(user_id, channel, thread_ts)
+    reply = (
+        f":white_check_mark: Stopped {count} monitor job(s) in this thread."
+        if count else
+        ":grey_question: No active monitors found in this thread."
+    )
+    say(text=reply, thread_ts=thread_ts)
+    return reply
+
+
 def _handle_multi_action(
     actions: list[dict],
     text: str,
@@ -1213,6 +1262,12 @@ def register_message_listeners(app: App) -> None:
 
         elif intent == "note_pattern":
             bot_reply = _handle_note_pattern(params, channel, thread_ts, user_id, say)
+
+        elif intent == "thread_monitor":
+            bot_reply = _handle_thread_monitor(params, channel, thread_ts, user_id, say)
+
+        elif intent == "stop_monitor":
+            bot_reply = _handle_stop_monitor(channel, thread_ts, user_id, say)
 
         else:
             bot_reply = _unclear_reply(text)

@@ -94,10 +94,12 @@ if __name__ == "__main__":
     # Start Jenkins build status poller (checks every 5 min, posts to thread when done)
     from bot.workers.jenkins_poller import start_poller  # noqa: PLC0415
     from bot.workers.wf_approval_poller import start_wf_approval_poller  # noqa: PLC0415
+    from bot.workers.monitor_runner import start_monitor_runner  # noqa: PLC0415
     from slack_sdk import WebClient  # noqa: PLC0415
     _slack_client = WebClient(token=settings.SLACK_BOT_TOKEN)
     start_poller(_slack_client)
     start_wf_approval_poller(_slack_client)
+    start_monitor_runner(_slack_client)   # Redis-backed thread monitor (survives restarts)
 
     logger.info("Infra-Bot is running in Socket Mode")
 

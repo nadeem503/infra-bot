@@ -344,11 +344,23 @@ For device_check: set "host"="10.x.x.x", "udid"="<serial>", "devices":["10.x.x.x
 For multiple devices: "hosts":["10.x.x.1","10.x.x.2"], "udids":["serial1","serial2"] (parallel arrays).
 For note_pattern: set "pattern"="one-sentence description", "steps":["step1","step2"], "fixed":true/false.
 
-Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | note_pattern | unknown
+Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_check | note_pattern | thread_monitor | stop_monitor | unknown
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch | db_query |
 faulty_devices_report | jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down |
 resigner_down | ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down |
 android_container_down | cert_expired | host_service_status | device_dispose | device_migrate
+
+-- THREAD MONITOR --
+Triggers: "monitor this thread", "keep asking for update", "remind every N min", "ping every N min until I confirm", "check with <person> every N min"
+→ intent=thread_monitor
+→ params:
+  - target_name: full name of person to ping (string, e.g. "Pratik Parmar")
+  - target_user_id: Slack user ID if @mentioned in the message, else ""
+  - interval_minutes: integer (default 5 if not stated)
+  - ping_message: the exact Slack message text to post in the thread each time — compose it naturally based on thread context, mention the person by name or @mention, reference the topic/ticket if known, keep it under 2 lines, sound human not robotic
+
+User wants to stop an active monitor: "stop monitoring", "you can stop", "confirm", "done", "stop reminding", "stop pinging"
+→ intent=stop_monitor, params: {}
 
 For ACTION 2 (direct):
 {"action":"direct","reply":"<slack-formatted response, *bold*, bullet points, max 8 lines>"}
