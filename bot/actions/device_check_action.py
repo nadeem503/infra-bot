@@ -78,8 +78,26 @@ def _resolve_host_type(host: str, udid: str) -> str:
 # ── iOS / macOS check ─────────────────────────────────────────────────────────
 
 def _tail_log(host: str, log_path: str, lines: int) -> str:
-    """SSH tail a log file, return output text."""
-    result = ssh_exec(host, f"tail -{lines} {shlex.quote(log_path)} 2>/dev/null || echo 'log not found'")
+    """SSH tail a log file, return output text.
+
+    Returns:
+      - File content (last N lines) if file exists and non-empty
+      - "log empty"        if file exists but has no content yet
+      - "log not found"    if file does not exist on host
+      - "host unreachable" if SSH connection failed
+    """
+    quoted = shlex.quote(log_path)
+    # Explicitly distinguish: missing vs empty vs content.
+    # `tail -20` (no -n) is deprecated on BSD/macOS; use `tail -n N`.
+    cmd = (
+        f"if [ -f {quoted} ]; then "
+        f"  OUT=$(tail -n {lines} {quoted} 2>/dev/null); "
+        f"  if [ -z \"$OUT\" ]; then echo 'log empty'; else printf '%s' \"$OUT\"; fi; "
+        f"else echo 'log not found'; fi"
+    )
+    result = ssh_exec(host, cmd)
+    if result["exit_code"] == -1:
+        return "host unreachable"
     return result["output"].strip()
 
 
@@ -125,12 +143,22 @@ def _get_android_uptime(host: str, udid: str) -> str:
     return "N/A"
 
 
+_LOG_UNAVAILABLE = frozenset({"log empty", "log not found", "host unreachable", ""})
+
+
 def _lrr_health_summary(log_output: str) -> str:
     """Parse LRR log and return a bulleted health summary for Slack.
 
     Checks for ios-device-agent and LTApp status codes in the log.
-    Each check gets its own bullet line so it's readable at a glance.
+    Returns a "log unavailable" notice when log is empty/missing/unreachable
+    so we never show false :x: negatives.
     """
+    val = log_output.strip()
+    if val == "host unreachable":
+        return "*LRR Health:* :grey_question: host unreachable — cannot determine health"
+    if val in _LOG_UNAVAILABLE:
+        return "*LRR Health:* :grey_question: log unavailable — cannot determine health"
+
     log_low = log_output.lower()
 
     agent_ok = "ios-device-agent is healthy" in log_low
@@ -172,7 +200,15 @@ def _check_ios(host: str, udid: str, log_lines: int = 20) -> tuple[str, str]:
     uptime_clean = re.sub(r'^device uptime:\s*', '', uptime, flags=re.IGNORECASE)
     health = _lrr_health_summary(log_output)
     uptime_line = f"*Device Uptime:* {uptime_clean}"
-    log_block = f"*LRR log (last {log_lines} lines):*\n```{log_output}```"
+    _log_state = log_output.strip()
+    if _log_state == "host unreachable":
+        log_block = "*LRR log:* :warning: host unreachable — could not fetch log"
+    elif _log_state == "log empty":
+        log_block = "*LRR log:* file exists but empty (LRR not yet running)"
+    elif _log_state == "log not found":
+        log_block = "*LRR log:* file not found on host"
+    else:
+        log_block = f"*LRR log (last {log_lines} lines):*\n```{log_output}```"
 
     if count != "1":
         # Check if LRR reports the device agent as healthy — if so this is likely a
