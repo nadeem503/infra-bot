@@ -1318,6 +1318,12 @@ def register_message_listeners(app: App) -> None:
         text = event.get("text", "").strip()
         ts = event.get("ts", "")
 
+        # Skip messages that @mention the bot — those are already handled by the
+        # app_mention handler (handle_mention). Processing them here too causes
+        # every @mention in an active thread to fire twice → duplicate replies.
+        if re.search(r'<@[A-Z0-9]+>', text):
+            return
+
         # Only process thread replies (not top-level channel messages)
         if not thread_ts or thread_ts == ts:
             return
