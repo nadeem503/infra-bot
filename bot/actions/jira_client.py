@@ -149,6 +149,32 @@ def _jira_account_by_email(email: str) -> Optional[str]:
     return None
 
 
+def resolve_name_to_jira(name: str) -> Optional[str]:
+    """Search Jira for a user by display name and return their accountId.
+
+    Uses /user/search?query=<name> — returns first match.
+    """
+    if not name:
+        return None
+    try:
+        resp = requests.get(
+            f"{JIRA_BASE}/user/search",
+            params={"query": name},
+            headers=_jira_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            users = resp.json()
+            if users:
+                account_id = users[0].get("accountId")
+                logger.info("Resolved Jira user '%s' → %s", name, account_id)
+                return account_id
+        logger.warning("No Jira user found for name '%s' (status %d)", name, resp.status_code)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Jira name lookup failed for '%s': %s", name, exc)
+    return None
+
+
 def get_account_display_name(account_id: str) -> str:
     """Return the Jira user's displayName for a given accountId.
 

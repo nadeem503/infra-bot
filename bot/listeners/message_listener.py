@@ -372,15 +372,19 @@ def _exec_create_jira(params: dict, slack_client=None) -> dict:
 
     description = "\n\n".join(sections)
 
-    # Resolve Slack user ID → JIRA accountId if provided
+    # Resolve Slack user ID / display name → JIRA accountId if provided
     assignee_jira_id: str | None = None
     raw_assignee = params.get("assignee", "")
     if raw_assignee:
-        if raw_assignee.startswith("U") and slack_client:
-            # Looks like a Slack user ID — resolve it
+        if raw_assignee.startswith("U") and len(raw_assignee) <= 12 and slack_client:
+            # Looks like a Slack user ID — resolve via email → Jira accountId
             assignee_jira_id = resolve_slack_user_to_jira(raw_assignee, slack_client)
+        elif " " in raw_assignee or (not raw_assignee.startswith("6") and len(raw_assignee) < 30):
+            # Looks like a display name (e.g. "Monika Rajput") — search Jira by name
+            from bot.actions.jira_client import resolve_name_to_jira  # noqa: PLC0415
+            assignee_jira_id = resolve_name_to_jira(raw_assignee)
         else:
-            # Already a JIRA accountId
+            # Already a JIRA accountId (long hex string)
             assignee_jira_id = raw_assignee
     # Fall back to bot default assignee if not resolved
     if not assignee_jira_id:
@@ -417,10 +421,15 @@ def _exec_assign_ticket(params: dict, slack_client=None) -> dict:
     if not ticket_key or not raw_assignee:
         return {"success": False, "error": "Need both ticket key and assignee"}
 
-    # Resolve Slack → JIRA if it looks like a Slack user ID
+    # Resolve Slack user ID or display name → JIRA accountId
     assignee_jira_id = raw_assignee
-    if raw_assignee.startswith("U") and slack_client:
+    if raw_assignee.startswith("U") and len(raw_assignee) <= 12 and slack_client:
         resolved = resolve_slack_user_to_jira(raw_assignee, slack_client)
+        if resolved:
+            assignee_jira_id = resolved
+    elif " " in raw_assignee or (not raw_assignee.startswith("6") and len(raw_assignee) < 30):
+        from bot.actions.jira_client import resolve_name_to_jira  # noqa: PLC0415
+        resolved = resolve_name_to_jira(raw_assignee)
         if resolved:
             assignee_jira_id = resolved
 
