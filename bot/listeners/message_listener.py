@@ -50,7 +50,7 @@ CONFIDENCE_THRESHOLD = 0.6
 # Action types that skip the bot approval card and execute immediately.
 # The GitHub Actions workflow itself has environment protection gates for prod approval.
 # After triggering, the bot notifies MOBILE_INFRA_SLACK_ID for awareness.
-_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate", "db_query", "faulty_devices_report"})
+_AUTO_EXECUTE_ACTIONS: frozenset[str] = frozenset({"device_dispose", "device_migrate", "db_query", "faulty_devices_report", "dynamic_cmd"})
 
 # Only these users may trigger infra actions (device checks, restarts, Jira, etc.)
 # All other users receive greetings/capability replies only.
@@ -269,6 +269,8 @@ ISSUE_TO_ACTION: dict[str, str] = {
     "android_container_down":   "android_container_restart",
     # Generic host check
     "host_service_status":      "host_service_status",
+    # Dynamic command — Claude determines the right shell command at runtime
+    "dynamic_cmd":              "dynamic_cmd",
 }
 
 
@@ -436,6 +438,62 @@ def _exec_assign_ticket(params: dict, slack_client=None) -> dict:
     result = assign_issue(ticket_key, assignee_jira_id)
     result["cc"] = cc
     return result
+
+
+def _handle_dynamic_cmd(params: dict, thread_ts: str, say) -> str:
+    """Run a Claude-generated diagnostic command on a host via SSH.
+
+    Claude picks the shell command. After execution, the raw output is sent
+    back to Claude to produce a clean, meaningful Slack reply — nothing is
+    hardcoded here.
+    """
+    from utils.ssh_exec import ssh_exec  # noqa: PLC0415
+    from bot.nlp.claude_brain import _call_claude_cli  # noqa: PLC0415
+
+    host = params.get("host", "").strip()
+    cmd  = params.get("cmd", "").strip()
+    description = params.get("description", "").strip()
+
+    if not host:
+        reply = ":warning: No host IP found — which host should I check?"
+        say(text=reply, thread_ts=thread_ts)
+        return reply
+    if not cmd:
+        reply = ":warning: I couldn't determine what command to run. Could you be more specific?"
+        say(text=reply, thread_ts=thread_ts)
+        return reply
+
+    result = ssh_exec(host, cmd)
+
+    if result["exit_code"] == -1:
+        # SSH failed — let Claude phrase the error naturally
+        format_prompt = (
+            f"The user asked about '{description or cmd}' on host {host}. "
+            f"SSH connection failed with: {result['error'][:200]}. "
+            f"Write a short, clear Slack reply (max 3 lines) explaining the SSH failure. "
+            f"Use Slack formatting. Reply with only the message text."
+        )
+    else:
+        output = result["output"].strip() or "(no output)"
+        if len(output) > 3000:
+            output = output[:3000] + "\n…(truncated)"
+        format_prompt = (
+            f"The user asked about '{description or cmd}' on host {host}. "
+            f"The command `{cmd}` returned:\n{output}\n\n"
+            f"Write a clean, concise Slack reply that interprets this output meaningfully. "
+            f"Highlight key numbers or statuses. Use Slack formatting (*bold*, bullet points). "
+            f"Max 10 lines. Reply with only the message text, no JSON."
+        )
+
+    try:
+        reply = _call_claude_cli(format_prompt, timeout=30, _log_action="dynamic_cmd_format")
+        reply = reply.strip() or f"```\n{result.get('output','(no output)').strip()}\n```"
+    except Exception:  # noqa: BLE001
+        # Fallback: raw output if Claude formatting fails
+        reply = f"```\n{result.get('output', '(no output)').strip()[:2000]}\n```"
+
+    say(text=reply, thread_ts=thread_ts)
+    return reply
 
 
 def _handle_thread_monitor(params: dict, channel: str, thread_ts: str, user_id: str, say) -> str:
@@ -680,6 +738,10 @@ def _handle_infra_issue(
         return _handle_jenkins_params(params, thread_ts, say)
     if issue_category == "jenkins_status":
         return _handle_jenkins_status(params, channel, thread_ts, say)
+
+    # --- Dynamic command — Claude picked the shell command, bot SSHes and runs it ---
+    if issue_category == "dynamic_cmd":
+        return _handle_dynamic_cmd(params, thread_ts, say)
     devices: list[str] = params.get("devices") or []
     region_slug: str = params.get("region") or "unknown"
 
@@ -1142,38 +1204,20 @@ def register_message_listeners(app: App) -> None:
             say(text=_QUOTA_MSG, thread_ts=thread_ts)
             return
 
-        # Fix #3: confidence gate — post A/B/C clarification card when the classifier
-        # is below threshold. Previously CONFIDENCE_THRESHOLD was defined but never checked,
-        # so the bot acted on every low-confidence classification without asking the user.
-        # Skip for: _direct_reply / _quota_exceeded (already handled above), and "unknown"
-        # (falls through to _unclear_reply which already asks for clarification).
+        # Confidence gate — when classifier is uncertain, ask a plain-text clarifying question.
+        # Skip for intents that already self-handle ambiguity or have their own reply paths.
         _SKIP_GATE = frozenset({"_direct_reply", "_quota_exceeded", "unknown"})
         if confidence < CONFIDENCE_THRESHOLD and intent not in _SKIP_GATE:
-            clarify_id = uuid.uuid4().hex[:8]
-            # Offer: detected intent | generic device-check | "rephrase" escape hatch
-            _options: list[dict] = [
-                {"intent": intent, "params": params,
-                 "label": intent.replace("_", " ").title()},
-                {"intent": "device_check", "params": params,
-                 "label": "Check device status only"},
-                {"intent": "unknown", "params": {},
-                 "label": "Neither \u2014 I\u2019ll rephrase"},
-            ]
-            # Deduplicate in case detected intent is already "device_check"
-            _seen: set[str] = set()
-            unique_opts: list[dict] = []
-            for o in _options:
-                if o["intent"] not in _seen:
-                    _seen.add(o["intent"])
-                    unique_opts.append(o)
-            get_redis().setex(
-                f"infra:clarify:{clarify_id}", 300,
-                json.dumps({"options": unique_opts, "text": classify_text}),
+            action_label = intent.replace("_", " ").title()
+            clarify_reply = (
+                f":thinking_face: I think you want *{action_label}* — but I'm not fully sure.\n"
+                f"Could you give me a bit more detail? For example: the device UDID, host IP, "
+                f"or what exactly you'd like me to do."
             )
-            blocks = _formatter.format_clarification_card(clarify_id, unique_opts)
-            say(blocks=blocks, text="Not sure what you mean — please clarify.", thread_ts=thread_ts)
+            say(text=clarify_reply, thread_ts=thread_ts)
+            thread_memory.add_message(channel, thread_ts, "assistant", clarify_reply)
             logger.info(
-                "[%s] Low confidence (%.2f) — clarification card posted (intent=%s)",
+                "[%s] Low confidence (%.2f) — asked for clarification (intent=%s)",
                 trace_id, confidence, intent,
             )
             return

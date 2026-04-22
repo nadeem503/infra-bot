@@ -271,10 +271,15 @@ Purpose: User wants to record a fix, solution, or pattern for future reference.
 Params: udid, host, device_name, issue_type (e.g. "WDAstatus_failed"), pattern (one sentence),
         steps (list of fix steps), fixed (true/false), region
 
--- MONITORING --
-Purpose: User asks to continuously watch/monitor/alert for a device.
-→ action=direct: "I don't support continuous monitoring yet — once the device is back,
-  mention me with `check now` and I'll verify. :eyes:"
+-- DYNAMIC HOST COMMAND (intent=infra_issue, issue_category=dynamic_cmd) --
+Purpose: User asks for any host or device diagnostic that is not covered by a specific skill above.
+Use this whenever you can reason about a shell command that would answer the user's question.
+Do NOT fall back to action=direct just because the topic isn't in the known list — if you can
+think of a command that answers it, use dynamic_cmd.
+Params:
+  host: IP of the target host (from message or thread)
+  cmd: the shell command you decide is best for the request — use your own judgment, no hints given
+  description: one short phrase describing what this command checks (e.g. "disk space", "memory")
 
 == DC INFRASTRUCTURE ==
 - macOS hosts: iOS devices — services: LRR, Resigner (port 6789), IHM, LRP, Reconciler (launchctl)
@@ -348,7 +353,7 @@ Valid intents: create_jira | assign_ticket | send_invite | infra_issue | device_
 Valid issue_categories: device_down | reboot | adb_issue | network_issue | db_mismatch | db_query |
 faulty_devices_report | jenkins_failure | app_crash | storage_issue | device_disconnected | lrr_down |
 resigner_down | ihm_down | reconciler_down | lrp_down | rmdm_down | rdtsa_down |
-android_container_down | cert_expired | host_service_status | device_dispose | device_migrate
+android_container_down | cert_expired | host_service_status | device_dispose | device_migrate | dynamic_cmd
 
 -- THREAD MONITOR --
 Triggers: "monitor this thread", "keep asking for update", "remind every N min", "ping every N min until I confirm", "check with <person> every N min"
